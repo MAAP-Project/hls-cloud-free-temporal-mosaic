@@ -35,11 +35,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --bbox)
-            bbox_xmin="$2"
-            bbox_ymin="$3"
-            bbox_xmax="$4"
-            bbox_ymax="$5"
-            shift 5
+            bbox="$2"
+            shift 2
             ;;
         --crs)
             crs="$2"
@@ -47,7 +44,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <xmin> <ymin> <xmax> <ymax> --crs <crs>"
+            echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <bbox_string> --crs <crs>"
             exit 1
             ;;
     esac
@@ -55,11 +52,9 @@ done
 
 # Validate required arguments
 if [[ -z "${start_datetime:-}" ]] || [[ -z "${end_datetime:-}" ]] || \
-   [[ -z "${bbox_xmin:-}" ]] || [[ -z "${bbox_ymin:-}" ]] || \
-   [[ -z "${bbox_xmax:-}" ]] || [[ -z "${bbox_ymax:-}" ]] || \
-   [[ -z "${crs:-}" ]]; then
+   [[ -z "${bbox:-}" ]] || [[ -z "${crs:-}" ]]; then
     echo "Error: Missing required arguments"
-    echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <xmin> <ymin> <xmax> <ymax> --crs <crs>"
+    echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <bbox_string> --crs <crs>"
     exit 1
 fi
 
@@ -75,6 +70,6 @@ unset PROJ_DATA
 UV_PROJECT=${basedir} uv run --no-dev ${basedir}/main.py \
     --start_datetime "${start_datetime}" \
     --end_datetime "${end_datetime}" \
-    --bbox ${bbox_xmin} ${bbox_ymin} ${bbox_xmax} ${bbox_ymax} \
+    --bbox ${bbox} \
     --crs "${crs}" \
     --output_dir="${OUTPUT_DIR}" 
