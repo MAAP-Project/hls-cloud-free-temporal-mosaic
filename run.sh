@@ -23,40 +23,17 @@ mkdir -p output
 INPUT_DIR=input
 OUTPUT_DIR=output
 
-# Parse named arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --start_datetime)
-            start_datetime="$2"
-            shift 2
-            ;;
-        --end_datetime)
-            end_datetime="$2"
-            shift 2
-            ;;
-        --bbox)
-            bbox="$2"
-            shift 2
-            ;;
-        --crs)
-            crs="$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown argument: $1"
-            echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <bbox_string> --crs <crs>"
-            exit 1
-            ;;
-    esac
-done
-
-# Validate required arguments
-if [[ -z "${start_datetime:-}" ]] || [[ -z "${end_datetime:-}" ]] || \
-   [[ -z "${bbox:-}" ]] || [[ -z "${crs:-}" ]]; then
-    echo "Error: Missing required arguments"
-    echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <bbox_string> --crs <crs>"
+# Parse positional arguments
+if [[ $# -ne 4 ]]; then
+    echo "Error: Expected 4 arguments, got $#"
+    echo "Usage: $0 <start_datetime> <end_datetime> <bbox_string> <crs>"
     exit 1
 fi
+
+start_datetime="$1"
+end_datetime="$2"
+bbox="$3"
+crs="$4"
 
 # Call the script using the absolute paths
 # Use the updated environment when calling 'uv run'
