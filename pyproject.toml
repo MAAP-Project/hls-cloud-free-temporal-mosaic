@@ -20,6 +20,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipython>=9.6.0",
+    "jupyterlab>=4.4.10",
     "matplotlib>=3.10.7",
     "mypy>=1.18.2",
     "pre-commit>=4.3.0",

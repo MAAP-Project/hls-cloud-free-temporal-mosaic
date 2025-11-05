@@ -23,12 +23,48 @@ mkdir -p output
 INPUT_DIR=input
 OUTPUT_DIR=output
 
-# Read the positional argument as defined in the algorithm registration here
-temporal=$1
-tile_idx=$2
+# Parse named arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --start_datetime)
+            start_datetime="$2"
+            shift 2
+            ;;
+        --end_datetime)
+            end_datetime="$2"
+            shift 2
+            ;;
+        --bbox)
+            bbox_xmin="$2"
+            bbox_ymin="$3"
+            bbox_xmax="$4"
+            bbox_ymax="$5"
+            shift 5
+            ;;
+        --crs)
+            crs="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <xmin> <ymin> <xmax> <ymax> --crs <crs>"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "${start_datetime:-}" ]] || [[ -z "${end_datetime:-}" ]] || \
+   [[ -z "${bbox_xmin:-}" ]] || [[ -z "${bbox_ymin:-}" ]] || \
+   [[ -z "${bbox_xmax:-}" ]] || [[ -z "${bbox_ymax:-}" ]] || \
+   [[ -z "${crs:-}" ]]; then
+    echo "Error: Missing required arguments"
+    echo "Usage: $0 --start_datetime <datetime> --end_datetime <datetime> --bbox <xmin> <ymin> <xmax> <ymax> --crs <crs>"
+    exit 1
+fi
 
 # Call the script using the absolute paths
-# Use the updated environment when calling 'conda run'
+# Use the updated environment when calling 'uv run'
 # This lets us run the same way in a Terminal as in DPS
 # Any output written to the stdout and stderr streams will be automatically captured and placed in the output dir
 
@@ -36,4 +72,9 @@ tile_idx=$2
 unset PROJ_LIB
 unset PROJ_DATA
 
-UV_PROJECT=${basedir} uv run ${basedir}/main.py --temporal ${temporal} --tile_idx ${tile_idx} --output_dir=${OUTPUT_DIR} 
+UV_PROJECT=${basedir} uv run --no-dev ${basedir}/main.py \
+    --start_datetime "${start_datetime}" \
+    --end_datetime "${end_datetime}" \
+    --bbox ${bbox_xmin} ${bbox_ymin} ${bbox_xmax} ${bbox_ymax} \
+    --crs "${crs}" \
+    --output_dir="${OUTPUT_DIR}" 

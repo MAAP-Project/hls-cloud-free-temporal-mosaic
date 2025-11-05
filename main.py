@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -43,17 +44,20 @@ GDAL_CONFIG = {
 }
 
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov/"
+DTYPE = "int16"
+FMASK_DTYPE = "uint8"
 NODATA = -9999
+FMASK_NODATA = 255
 HLS_ODC_STAC_CONFIG = {
     "HLSL30_2.0": {
         "assets": {
             "*": {
                 "nodata": NODATA,
-                "data_type": "int16",
+                "data_type": DTYPE,
             },
             "Fmask": {
-                "nodata": 0,
-                "data_type": "uint8",
+                "nodata": FMASK_NODATA,
+                "data_type": FMASK_DTYPE,
             },
         },
         "aliases": {
@@ -73,11 +77,11 @@ HLS_ODC_STAC_CONFIG = {
         "assets": {
             "*": {
                 "nodata": NODATA,
-                "dtype": "int16",
+                "data_type": DTYPE,
             },
             "Fmask": {
-                "nodata": 0,
-                "dtype": "uint8",
+                "nodata": FMASK_NODATA,
+                "data_type": FMASK_DTYPE,
             },
         },
         "aliases": {
@@ -112,6 +116,26 @@ for field in hls_mask_bitfields:
 HLS_BITMASK = 14
 
 
+def parse_datetime_utc(dt_string: str) -> datetime:
+    """
+    Parse a datetime string and ensure it has UTC timezone.
+    If no timezone is specified, assume UTC.
+
+    Args:
+        dt_string: ISO format datetime string (e.g., '2024-01-01T00:00:00' or '2024-01-01T00:00:00Z')
+
+    Returns:
+        datetime object with UTC timezone
+    """
+    dt = datetime.fromisoformat(dt_string.replace("Z", "+00:00"))
+
+    # If the datetime is naive (no timezone), assume UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt
+
+
 def group_by_sensor_and_date(
     item: Item,
     parsed: ParsedItem,
@@ -124,17 +148,9 @@ def group_by_sensor_and_date(
     return f"{sensor}_{day}"
 
 
-async def run(
-    temporal: str,
-    bbox: BBox,
-    crs: CRS,
-    output_dir: Path,
-    bands: list[str] = DEFAULT_BANDS,
-    resolution: int | float = DEFAULT_RESOLUTION,
-):
-    if not bands:
-        raise ValueError("you must provide a list of bands")
-
+def get_stac_items(
+    bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS
+) -> list[Item]:
     logger.info("querying HLS archive")
     client = DuckdbClient(use_hive_partitioning=True)
     client.execute(
@@ -148,7 +164,7 @@ async def run(
 
     items = client.search(
         href="s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet-v1/year=*/month=*/*.parquet",
-        datetime=temporal,
+        datetime="/".join(dt.isoformat() for dt in [start_datetime, end_datetime]),
         bbox=transform_bounds(
             src_crs=crs,
             dst_crs="epsg:4326",
@@ -168,12 +184,34 @@ async def run(
             "HLSL30_2.0" if item["id"].startswith("HLS.L30") else "HLSS30_2.0"
         )
         del item["properties"]["proj:epsg"]
+
         item["stac_extensions"] = [
             ext for ext in item["stac_extensions"] if "proj" not in ext
         ]
+
         item["type"] = "Feature"
 
-    items = [Item.from_dict(item) for item in items]
+    return [Item.from_dict(item) for item in items]
+
+
+async def run(
+    start_datetime: datetime,
+    end_datetime: datetime,
+    bbox: BBox,
+    crs: CRS,
+    output_dir: Path,
+    bands: list[str] = DEFAULT_BANDS,
+    resolution: int | float = DEFAULT_RESOLUTION,
+):
+    if not bands:
+        raise ValueError("you must provide a list of bands")
+
+    items = get_stac_items(
+        bbox=bbox,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        crs=crs,
+    )
 
     logger.info("loading into xarray via odc.stac")
     stack = odc.stac.load(
@@ -185,8 +223,7 @@ async def run(
         geobox=GeoBox.from_bbox(bbox=bbox, crs=crs, resolution=resolution, tight=True),
     ).sortby("time")
 
-    fmask = stack["Fmask"].astype("uint16")
-    mask = fmask & HLS_BITMASK
+    mask = stack["Fmask"] & HLS_BITMASK
 
     cloud_free = stack[bands].where(mask == 0).where(stack != NODATA)
 
@@ -206,7 +243,7 @@ async def run(
         da_to_export.rio.to_raster(
             output_file_path,
             driver="COG",
-            dtype="int16",
+            dtype=DTYPE,
             compress="DEFLATE",
         )
 
@@ -226,12 +263,19 @@ async def run(
     source_file = f"{output_dir}/{assets[bands[0]].href}"
     item = create_stac_item(
         source=source_file,
-        id=f"{'_'.join(str(x) for x in bbox)}-{temporal}",
+        id=f"{'_'.join(str(x) for x in bbox)}-{start_datetime.isoformat()}-{end_datetime.isoformat()}",
         with_proj=True,
+        properties={
+            "datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "start_datetime": start_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
     )
 
     # replace auto-generated assets with our own
     item.assets = assets
+
+    # set datetime properties
     item.set_self_href(f"{output_dir}/item.json")
 
     catalog.add_item(item)
@@ -247,7 +291,18 @@ if __name__ == "__main__":
     parse = argparse.ArgumentParser(
         description="Queries the HLS STAC geoparquet archive and writes the result to a file"
     )
-    parse.add_argument("--temporal", help="temporal range for the query", required=True)
+    parse.add_argument(
+        "--start_datetime",
+        help="start datetime in ISO format (e.g., 2024-01-01T00:00:00Z)",
+        required=True,
+        type=str,
+    )
+    parse.add_argument(
+        "--end_datetime",
+        help="end datetime in ISO format (e.g., 2024-12-31T23:59:59Z)",
+        required=True,
+        type=str,
+    )
     parse.add_argument(
         "--bbox",
         help="bounding box (xmin, ymin, xmax, ymax)",
@@ -270,11 +325,23 @@ if __name__ == "__main__":
     output_dir = Path(args.output_dir)
     bbox = tuple(args.bbox)
     crs = CRS.from_string(args.crs)
+    start_datetime = parse_datetime_utc(args.start_datetime)
+    end_datetime = parse_datetime_utc(args.end_datetime)
+
     logging.info(
         f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
     )
     os.environ.update(GDAL_CONFIG)
+
     logging.info(
-        f"running with temporal: {args.temporal}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
+        f"running with start_datetime: {start_datetime}, end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
     )
-    asyncio.run(run(temporal=args.temporal, bbox=bbox, crs=crs, output_dir=output_dir))
+    asyncio.run(
+        run(
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            bbox=bbox,
+            crs=crs,
+            output_dir=output_dir,
+        )
+    )
