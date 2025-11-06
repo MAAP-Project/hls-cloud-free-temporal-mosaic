@@ -1,49 +1,49 @@
-# HLS STAC Geoparquet DPS Demo
+# HLS Cloud-Free Temporal Mosaic
 
-Demonstrate how to query the HLS STAC Geoparquet archive in a DPS job
+Create cloud-free composite images from temporal mosaics of HLS granules using STAC Geoparquet
 
 ## Motivation
 
-The CMR STAC API has imposed rate limits on the HLS collections. Users can query this archive of the HLS STAC records directly from parquet files in S3 without any API rate limits.
+The CMR STAC API has imposed rate limits on the HLS collections. This algorithm queries the HLS STAC records directly from parquet files in S3 without any API rate limits, then generates cloud-free composites by mosaicking multiple observations over time.
 
 ## About
 
-This DPS algorithm uses [`rustac`](https://github.com/stac-utils/rustac-py) to query an archive of HLS STAC records stored as STAC Geoparquet. By using `rustac` + parquet files there is no API between the requester and the actual data!
+This DPS algorithm uses [`rustac`](https://github.com/stac-utils/rustac-py) to query an archive of HLS STAC records stored as STAC Geoparquet, then creates cloud-free composites using temporal median compositing. The workflow:
 
-Try this out if you want to query HLS STAC records in your DPS jobs.
+1. Queries HLS STAC items for a given bounding box and time range
+2. Loads the spectral bands and cloud mask (Fmask) using `odc-stac`
+3. Masks out cloudy pixels using the HLS Fmask layer
+4. Computes the median value for each pixel across the time series
+5. Exports the result as Cloud Optimized GeoTIFFs with STAC metadata
+
+By using `rustac` + parquet files there is no API between the requester and the actual data!
 
 > [!WARNING]
 > This archive of HLS STAC records is experimental and only contains items through May 2025.
+
+## Usage
+
+```bash
+uv run main.py \
+  --start_datetime "2025-05-01T00:00:00Z" \
+  --end_datetime "2025-05-31T23:59:59Z" \
+  --bbox 500000 5000000 600000 5100000 \
+  --crs "EPSG:32615" \
+  --output_dir "./output" \
+  --direct_bucket_access  # optional: use S3 URIs instead of HTTPS (must be running in us-west-2)
+```
+
+### Parameters
+
+- `--start_datetime`: Start datetime in ISO format (e.g., 2025-05-01T00:00:00Z)
+- `--end_datetime`: End datetime in ISO format (e.g., 2025-05-31T23:59:59Z)
+- `--bbox`: Bounding box coordinates (xmin ymin xmax ymax)
+- `--crs`: CRS definition for the bounding box coordinates. **Must use meter units** (e.g., UTM zones like EPSG:32615, Web Mercator EPSG:3857). Geographic CRS with degree units (like EPSG:4326) are not supported.
+- `--output_dir`: Directory where output files will be saved
+- `--direct_bucket_access`: Optional flag to use S3 URIs instead of HTTPS URLs for faster data access
 
 ## Details
 
 The partitioned parquet dataset is available in my shared folder in the `maap-ops-workspace` bucket. The MAAP ADE and DPS both will have permissions to read from the archive.
 
-See below for an example of how to run a basic query against the STAC geoparquet archive:
-
-```python
-from rustac import DuckdbClient
-
-
-client = DuckdbClient(use_hive_partitioning=True)
-
-# configure duckdb to find S3 credentials
-client.execute(
-    """
-    CREATE OR REPLACE SECRET secret (
-         TYPE S3,
-         PROVIDER CREDENTIAL_CHAIN
-    );
-    """
-)
-
-# use rustac/duckdb to search through the partitioned parquet dataset to find matching items
-results = client.search(
-    href="s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet-v1/year=*/month=*/*.parquet",
-    datetime="2025-05-01T00:00:00Z/2025-05-31T23:59:59Z",
-    bbox=(-90, 45, -85, 50),
-)
-
-```
-
-`results` is a list of STAC items in dictionary form!
+The algorithm groups HLS observations by sensor (L30/S30) and date, masks cloudy pixels using Fmask bit flags (cloud shadow, adjacent to cloud shadow, and cloud), and computes the temporal median to fill in cloud-free values. The output includes a STAC catalog with COG assets for each requested band (default: red, green, blue).
