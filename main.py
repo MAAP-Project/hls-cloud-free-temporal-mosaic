@@ -222,12 +222,13 @@ async def run(
             "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
         )
         odc.stac.configure_rio(
+            cloud_defaults=True,
             aws={
                 "aws_access_key_id": creds["accessKeyId"],
                 "aws_secret_access_key": creds["secretAccessKey"],
                 "aws_session_token": creds["sessionToken"],
                 "region_name": "us-west-2",
-            }
+            },
         )
         for item in items:
             for asset in item.assets.values():
