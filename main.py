@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
@@ -395,13 +396,33 @@ if __name__ == "__main__":
     logging.info(
         f"running with start_datetime: {start_datetime}, end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
     )
-    asyncio.run(
-        run(
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            bbox=bbox,
-            crs=crs,
-            output_dir=output_dir,
-            direct_bucket_access=args.direct_bucket_access,
-        )
-    )
+
+    # Retry loop for handling intermittent failures
+    max_retries = 3
+    retry_delay = 5  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            asyncio.run(
+                run(
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime,
+                    bbox=bbox,
+                    crs=crs,
+                    output_dir=output_dir,
+                    direct_bucket_access=args.direct_bucket_access,
+                )
+            )
+            logging.info("Successfully completed processing")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2**attempt)  # exponential backoff
+                logging.warning(
+                    f"Attempt {attempt + 1}/{max_retries} failed with error: {e}. "
+                    f"Retrying in {wait_time} seconds..."
+                )
+                time.sleep(wait_time)
+            else:
+                logging.error(f"All {max_retries} attempts failed. Last error: {e}")
+                raise
