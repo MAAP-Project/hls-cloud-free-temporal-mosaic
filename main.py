@@ -284,7 +284,7 @@ async def run(
     source_file = f"{output_dir}/{assets[bands[0]].href}"
     item = create_stac_item(
         source=source_file,
-        id=f"{'_'.join(str(x) for x in bbox)}-{start_datetime.isoformat()}-{end_datetime.isoformat()}",
+        id=f"{'_'.join(str(int(x)) for x in bbox)}-{start_datetime.strftime('%Y%m%d')}-{end_datetime.strftime('%Y%m%d')}",
         with_proj=True,
         properties={
             "datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
