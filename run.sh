@@ -72,4 +72,5 @@ UV_PROJECT=${basedir} uv run --no-dev ${basedir}/main.py \
     --end_datetime "${end_datetime}" \
     --bbox ${bbox} \
     --crs "${crs}" \
-    --output_dir="${OUTPUT_DIR}" 
+    --output_dir="${OUTPUT_DIR}" \
+    --direct_bucket_access

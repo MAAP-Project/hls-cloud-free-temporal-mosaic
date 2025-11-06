@@ -11,6 +11,7 @@ from typing import Tuple
 
 import odc.stac
 import rioxarray  # noqa
+from maap.maap import MAAP
 from odc.geo.geobox import GeoBox
 from odc.stac import ParsedItem
 from pyproj import CRS
@@ -29,6 +30,7 @@ BBox = Tuple[float, float, float, float]
 MEMORY_GB = 8
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF",
     "GDAL_CACHEMAX": "75%",
     "GDAL_INGESTED_BYTES_AT_OPEN": "32768",
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
@@ -202,6 +204,7 @@ async def run(
     output_dir: Path,
     bands: list[str] = DEFAULT_BANDS,
     resolution: int | float = DEFAULT_RESOLUTION,
+    direct_bucket_access: bool = False,
 ):
     if not bands:
         raise ValueError("you must provide a list of bands")
@@ -212,6 +215,24 @@ async def run(
         end_datetime=end_datetime,
         crs=crs,
     )
+
+    if direct_bucket_access:
+        maap = MAAP(maap_host="api.maap-project.org")
+        creds = maap.aws.earthdata_s3_credentials(
+            "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
+        )
+        odc.stac.configure_rio(
+            aws={
+                "aws_access_key_id": creds["accessKeyId"],
+                "aws_secret_access_key": creds["secretAccessKey"],
+                "aws_session_token": creds["sessionToken"],
+                "region_name": "us-west-2",
+            }
+        )
+        for item in items:
+            for asset in item.assets.values():
+                if asset.href.startswith(URL_PREFIX):
+                    asset.href = asset.href.replace(URL_PREFIX, "s3://")
 
     logger.info("loading into xarray via odc.stac")
     stack = odc.stac.load(
@@ -320,6 +341,12 @@ if __name__ == "__main__":
     parse.add_argument(
         "--output_dir", help="Directory in which to save output", required=True
     )
+    parse.add_argument(
+        "--direct_bucket_access",
+        help="Use direct S3 bucket access instead of HTTP URLs",
+        action="store_true",
+        default=False,
+    )
     args = parse.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -343,5 +370,6 @@ if __name__ == "__main__":
             bbox=bbox,
             crs=crs,
             output_dir=output_dir,
+            direct_bucket_access=args.direct_bucket_access,
         )
     )
