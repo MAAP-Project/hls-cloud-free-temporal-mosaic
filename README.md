@@ -23,6 +23,8 @@ By using `rustac` + parquet files there is no API between the requester and the 
 
 ## Usage
 
+### Direct Python Invocation
+
 ```bash
 uv run main.py \
   --start_datetime "2025-05-01T00:00:00Z" \
@@ -33,14 +35,32 @@ uv run main.py \
   --direct_bucket_access  # optional: use S3 URIs instead of HTTPS (must be running in us-west-2)
 ```
 
+### Shell Script Wrappers for DPS
+
+**Legacy DPS (positional arguments)**:
+```bash
+./run.sh "2025-05-01T00:00:00Z" "2025-05-31T23:59:59Z" "500000 5000000 600000 5100000" "EPSG:32615"
+```
+
+**OGC Application Packages (named arguments)**:
+```bash
+./run-named.sh \
+  --start_datetime "2025-05-01T00:00:00Z" \
+  --end_datetime "2025-05-31T23:59:59Z" \
+  --bbox "500000 5000000 600000 5100000" \
+  --crs "EPSG:32615"
+```
+
+Both scripts automatically create the `output` directory and handle the `input` directory structure expected by DPS. They enable direct bucket access by default for faster data retrieval.
+
 ### Parameters
 
 - `--start_datetime`: Start datetime in ISO format (e.g., 2025-05-01T00:00:00Z)
 - `--end_datetime`: End datetime in ISO format (e.g., 2025-05-31T23:59:59Z)
 - `--bbox`: Bounding box coordinates (xmin ymin xmax ymax)
 - `--crs`: CRS definition for the bounding box coordinates. **Must use meter units** (e.g., UTM zones like EPSG:32615, Web Mercator EPSG:3857). Geographic CRS with degree units (like EPSG:4326) are not supported.
-- `--output_dir`: Directory where output files will be saved
-- `--direct_bucket_access`: Optional flag to use S3 URIs instead of HTTPS URLs for faster data access
+- `--output_dir`: Directory where output files will be saved (handled automatically by shell scripts)
+- `--direct_bucket_access`: Optional flag to use S3 URIs instead of HTTPS URLs for faster data access (enabled by default in shell scripts)
 
 ## Details
 
