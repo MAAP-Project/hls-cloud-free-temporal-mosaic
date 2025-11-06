@@ -138,6 +138,36 @@ def parse_datetime_utc(dt_string: str) -> datetime:
     return dt
 
 
+def validate_crs_units_in_meters(crs: CRS) -> None:
+    """
+    Validate that the CRS uses meters as its linear unit.
+
+    Args:
+        crs: The CRS to validate
+
+    Raises:
+        ValueError: If the CRS does not use meters as its linear unit
+    """
+    # Get the axis info to check units
+    axis_info = crs.axis_info
+
+    if not axis_info:
+        raise ValueError(
+            f"Cannot determine units for CRS '{crs}'. "
+            "Please provide a CRS with meter units."
+        )
+
+    # Check if any axis uses non-meter units
+    for axis in axis_info:
+        unit_name = axis.unit_name.lower()
+        # Common meter unit names: "metre", "meter", "m"
+        if unit_name not in ["metre", "meter", "m"]:
+            raise ValueError(
+                f"CRS '{crs}' uses '{axis.unit_name}' units, but only CRS with meter units are supported. "
+                f"Please provide a CRS that uses meters (e.g., UTM zones, Web Mercator)."
+            )
+
+
 def group_by_sensor_and_date(
     item: Item,
     parsed: ParsedItem,
@@ -353,6 +383,7 @@ if __name__ == "__main__":
     output_dir = Path(args.output_dir)
     bbox = tuple(args.bbox)
     crs = CRS.from_string(args.crs)
+    validate_crs_units_in_meters(crs)
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
 
