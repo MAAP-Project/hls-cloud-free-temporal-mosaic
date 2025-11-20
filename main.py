@@ -46,6 +46,9 @@ GDAL_CONFIG = {
     # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
 
+HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
+HLS_STAC_GEOPARQUET_HREF = "s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet-v2/{collection}/**/*.parquet"
+
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov/"
 DTYPE = "int16"
 FMASK_DTYPE = "uint8"
@@ -106,7 +109,7 @@ HLS_ODC_STAC_CONFIG = {
 }
 
 # these are the ones that we are going to use
-DEFAULT_BANDS = ["red", "green", "blue"]
+DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
 DEFAULT_RESOLUTION = 30
 
 """
@@ -195,34 +198,22 @@ def get_stac_items(
         """
     )
 
-    items = client.search(
-        href="s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet-v1/year=*/month=*/*.parquet",
-        datetime="/".join(dt.isoformat() for dt in [start_datetime, end_datetime]),
-        bbox=transform_bounds(
-            src_crs=crs,
-            dst_crs="epsg:4326",
-            left=bbox[0],
-            bottom=bbox[1],
-            right=bbox[2],
-            top=bbox[3],
-        ),
-    )
+    items = []
+    for collection in HLS_COLLECTIONS:
+        items = client.search(
+            href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
+            datetime="/".join(dt.isoformat() for dt in [start_datetime, end_datetime]),
+            bbox=transform_bounds(
+                src_crs=crs,
+                dst_crs="epsg:4326",
+                left=bbox[0],
+                bottom=bbox[1],
+                right=bbox[2],
+                top=bbox[3],
+            ),
+        )
 
     logger.info(f"found {len(items)} items")
-
-    # the HLS STAC geoparquet store contains items from two collections but
-    # the collection id is not set :/
-    for item in items:
-        item["collection"] = (
-            "HLSL30_2.0" if item["id"].startswith("HLS.L30") else "HLSS30_2.0"
-        )
-        del item["properties"]["proj:epsg"]
-
-        item["stac_extensions"] = [
-            ext for ext in item["stac_extensions"] if "proj" not in ext
-        ]
-
-        item["type"] = "Feature"
 
     return [Item.from_dict(item) for item in items]
 
@@ -237,9 +228,6 @@ async def run(
     resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
 ):
-    if not bands:
-        raise ValueError("you must provide a list of bands")
-
     items = get_stac_items(
         bbox=bbox,
         start_datetime=start_datetime,
@@ -313,10 +301,18 @@ async def run(
         catalog_type=CatalogType.SELF_CONTAINED,
     )
 
+    # use one of the output files as a template for rio-stac
     source_file = f"{output_dir}/{assets[bands[0]].href}"
+
     item = create_stac_item(
         source=source_file,
-        id=f"{'_'.join(str(int(x)) for x in bbox)}-{start_datetime.strftime('%Y%m%d')}-{end_datetime.strftime('%Y%m%d')}",
+        id="-".join(
+            [
+                "_".join(str(int(x)) for x in bbox),
+                start_datetime.strftime("%Y%m%d"),
+                end_datetime.strftime("%Y%m%d"),
+            ]
+        ),
         with_proj=True,
         properties={
             "datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -328,9 +324,9 @@ async def run(
     # replace auto-generated assets with our own
     item.assets = assets
 
-    # set datetime properties
     item.set_self_href(f"{output_dir}/item.json")
 
+    # finalize catalog and save to the output directory
     catalog.add_item(item)
     item.make_asset_hrefs_relative()
 
