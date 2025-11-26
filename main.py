@@ -47,7 +47,7 @@ GDAL_CONFIG = {
 }
 
 HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
-HLS_STAC_GEOPARQUET_HREF = "s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet-v2/{collection}/**/*.parquet"
+HLS_STAC_GEOPARQUET_HREF = "s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet/v0.2.0/{collection}/**/*.parquet"
 
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov/"
 DTYPE = "int16"
