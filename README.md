@@ -19,7 +19,7 @@ This DPS algorithm uses [`rustac`](https://github.com/stac-utils/rustac-py) to q
 By using `rustac` + parquet files there is no API between the requester and the actual data!
 
 > [!WARNING]
-> This archive of HLS STAC records is experimental and only contains items through May 2025.
+> This archive of HLS STAC records is experimental and only contains items through October 2025.
 
 ## Usage
 
@@ -31,7 +31,7 @@ uv run main.py \
   --end_datetime "2025-05-31T23:59:59Z" \
   --bbox 500000 5000000 600000 5100000 \
   --crs "EPSG:32615" \
-  --output_dir "./output" \
+  --output_dir "/tmp/output" \
   --direct_bucket_access  # optional: use S3 URIs instead of HTTPS (must be running in us-west-2)
 ```
 
