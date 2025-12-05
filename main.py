@@ -47,7 +47,7 @@ GDAL_CONFIG = {
 }
 
 HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
-HLS_STAC_GEOPARQUET_HREF = "s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet/v0.2.0/{collection}/**/*.parquet"
+HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/**/*.parquet"
 
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov/"
 DTYPE = "int16"
@@ -200,17 +200,34 @@ def get_stac_items(
 
     items = []
     for collection in HLS_COLLECTIONS:
-        items = client.search(
-            href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
-            datetime="/".join(dt.isoformat() for dt in [start_datetime, end_datetime]),
-            bbox=transform_bounds(
-                src_crs=crs,
-                dst_crs="epsg:4326",
-                left=bbox[0],
-                bottom=bbox[1],
-                right=bbox[2],
-                top=bbox[3],
-            ),
+        items.extend(
+            client.search(
+                href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
+                datetime="/".join(
+                    dt.isoformat() for dt in [start_datetime, end_datetime]
+                ),
+                bbox=transform_bounds(
+                    src_crs=crs,
+                    dst_crs="epsg:4326",
+                    left=bbox[0],
+                    bottom=bbox[1],
+                    right=bbox[2],
+                    top=bbox[3],
+                ),
+                filter={
+                    "op": "and",
+                    "args": [
+                        {
+                            "op": "between",
+                            "args": [
+                                {"property": "year"},
+                                start_datetime.year,
+                                end_datetime.year,
+                            ],
+                        },
+                    ],
+                },
+            )
         )
 
     logger.info(f"found {len(items)} items")

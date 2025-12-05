@@ -1,0 +1,30 @@
+algorithm_description: Generate cloud-free temporal mosaics from HLS data
+algorithm_name: HLS Cloud Free Temporal Mosaic
+algorithm_version: v0.2
+build_command: hls-cloud-free-temporal-mosaic/build-env.sh
+disk_space: 8GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: ''
+    description: ' start datetime for HLS STAC query in YYYY-mm-ddTHH:MM:SSZ format'
+    name: start_datetime
+    required: true
+  - default: ''
+    description: ' end datetime for HLS STAC query in YYYY-mm-ddTHH:MM:SSZ format'
+    name: end_datetime
+    required: true
+  - default: ''
+    description: space-separated bounding box coordinates in CRS coordinates (xmin
+      ymin xmax ymax)
+    name: bbox
+    required: true
+  - default: ''
+    description: coordinate reference system (e.g. epsg:5070)
+    name: crs
+    required: true
+queue: maap-dps-worker-16gb
+repository_url: https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic
+run_command: hls-cloud-free-temporal-mosaic/run.sh

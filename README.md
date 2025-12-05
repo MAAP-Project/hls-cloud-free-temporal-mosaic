@@ -19,7 +19,8 @@ This DPS algorithm uses [`rustac`](https://github.com/stac-utils/rustac-py) to q
 By using `rustac` + parquet files there is no API between the requester and the actual data!
 
 > [!WARNING]
-> This archive of HLS STAC records is experimental and only contains items through October 2025.
+> This archive of HLS STAC records is experimental and is ~1.5 months behind the current time. 
+> See the [hls-stac-geoparquet-archive repo](https://github.com/MAAP-Project/hls-stac-geoparquet-archive) for details.
 
 ## Usage
 
