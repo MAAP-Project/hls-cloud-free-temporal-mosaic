@@ -11,19 +11,22 @@ from pathlib import Path
 from typing import Tuple
 
 import odc.stac
+import rasterio
 import rioxarray  # noqa
 from maap.maap import MAAP
 from odc.geo.geobox import GeoBox
 from odc.stac import ParsedItem
 from pyproj import CRS
 from pystac import Asset, Catalog, CatalogType, Item, MediaType
+from rasterio.session import AWSSession
 from rasterio.warp import transform_bounds
 from rio_stac import create_stac_item
 from rustac import DuckdbClient
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
+logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BBox = Tuple[float, float, float, float]
@@ -252,6 +255,7 @@ async def run(
         crs=crs,
     )
 
+    rasterio_env = {}
     if direct_bucket_access:
         maap = MAAP(maap_host="api.maap-project.org")
         creds = maap.aws.earthdata_s3_credentials(
@@ -266,10 +270,30 @@ async def run(
                 "region_name": "us-west-2",
             },
         )
+        rasterio_env["session"] = AWSSession(
+            **{
+                "aws_access_key_id": creds["accessKeyId"],
+                "aws_secret_access_key": creds["secretAccessKey"],
+                "aws_session_token": creds["sessionToken"],
+                "region_name": "us-west-2",
+            }
+        )
         for item in items:
             for asset in item.assets.values():
                 if asset.href.startswith(URL_PREFIX):
                     asset.href = asset.href.replace(URL_PREFIX, "s3://")
+
+    logger.info("checking proj metadata")
+    fixed_count = 0
+    with rasterio.Env(**rasterio_env):
+        for item in items:
+            if (not item.ext.proj.shape) and (not item.ext.proj.transform):
+                fixed_count += 1
+                with rasterio.open(item.assets["Fmask"].href) as src:
+                    item.ext.proj.shape = src.shape
+                    item.ext.proj.transform = list(src.transform)
+
+    logger.info(f"fixed proj metadata for {fixed_count} items")
 
     logger.info("loading into xarray via odc.stac")
     stack = odc.stac.load(
