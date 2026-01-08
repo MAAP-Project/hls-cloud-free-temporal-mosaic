@@ -310,10 +310,26 @@ async def run(
     cloud_free = stack[bands].where(mask == 0).where(stack != NODATA)
 
     logger.info("computing median values")
-    composite = cloud_free.median(dim="time", skipna=True).fillna(NODATA).compute()
+    composite = cloud_free.median(dim="time", skipna=True).fillna(NODATA)
 
     assets = {}
     for band in bands:
+        if direct_bucket_access:
+            logger.info("refreshing AWS credentials")
+            maap = MAAP(maap_host="api.maap-project.org")
+            creds = maap.aws.earthdata_s3_credentials(
+                "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
+            )
+            odc.stac.configure_rio(
+                cloud_defaults=True,
+                aws={
+                    "aws_access_key_id": creds["accessKeyId"],
+                    "aws_secret_access_key": creds["secretAccessKey"],
+                    "aws_session_token": creds["sessionToken"],
+                    "region_name": "us-west-2",
+                },
+            )
+
         href = f"{band}.tif"
         logger.info(f"exporting {href}")
         da = composite[band]
