@@ -247,13 +247,16 @@ async def run(
     bands: list[str] = DEFAULT_BANDS,
     resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
-):
+) -> None:
     items = get_stac_items(
         bbox=bbox,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
         crs=crs,
     )
+
+    if not items:
+        return
 
     rasterio_env = {}
     if direct_bucket_access:
