@@ -45,6 +45,10 @@ GDAL_CONFIG = {
     "VSI_CACHE": "TRUE",
     "VSI_CACHE_SIZE": "536870912",
     "GDAL_NUM_THREADS": "ALL_CPUS",
+    # Retry configuration for transient S3 errors
+    "GDAL_HTTP_MAX_RETRY": "10",
+    "GDAL_HTTP_RETRY_DELAY": "2",
+    "CPL_VSIL_CURL_NON_CACHED": "/vsis3/lp-prod-protected",  # Avoid caching issues with auth
     # "CPL_DEBUG": "ON" if debug else "OFF",
     # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
