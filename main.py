@@ -1,25 +1,24 @@
-"""Create a cloud-free composite image from a temporal mosaic of HLS granules"""
+"""Create a cloud-free composite image from a temporal mosaic of HLS granules."""
 
 import argparse
-import asyncio
+import base64
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Tuple
+from typing import Any
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
-import odc.stac
-import rasterio
-import rioxarray  # noqa
-from maap.maap import MAAP
-from odc.geo.geobox import GeoBox
-from odc.stac import ParsedItem
+import lazycogs
+import rioxarray  # noqa: F401
+import xarray as xr
+from affine import Affine
+from obstore.auth.earthdata import NasaEarthdataCredentialProvider
+from obstore.store import HTTPStore, S3Store
 from pyproj import CRS
-from pystac import Asset, Catalog, CatalogType, Item, MediaType
-from rasterio.session import AWSSession
-from rasterio.warp import transform_bounds
+from pystac import Asset, Catalog, CatalogType, MediaType
 from rio_stac import create_stac_item
 from rustac import DuckdbClient
 
@@ -29,177 +28,106 @@ logging.basicConfig(
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-BBox = Tuple[float, float, float, float]
+BBox = tuple[float, float, float, float]
 
-MEMORY_GB = 8
-GDAL_CONFIG = {
-    "CPL_TMPDIR": "/tmp",
-    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF",
-    "GDAL_CACHEMAX": "75%",
-    "GDAL_INGESTED_BYTES_AT_OPEN": "32768",
-    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-    "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
-    "GDAL_HTTP_MULTIPLEX": "YES",
-    "GDAL_HTTP_VERSION": "2",
-    "PYTHONWARNINGS": "ignore",
-    "VSI_CACHE": "TRUE",
-    "VSI_CACHE_SIZE": "536870912",
-    "GDAL_NUM_THREADS": "ALL_CPUS",
-    # "CPL_DEBUG": "ON" if debug else "OFF",
-    # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
-}
-
-HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
-HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/**/*.parquet"
-
-URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov/"
+DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
+DEFAULT_RESOLUTION = 30
 DTYPE = "int16"
 FMASK_DTYPE = "uint8"
 NODATA = -9999
 FMASK_NODATA = 255
-HLS_ODC_STAC_CONFIG = {
+HLS_BITMASK = 14
+URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
+EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
+HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/**/*.parquet"
+CHUNKS = {"time": -1, "x": 2048, "y": 2048}
+
+COLLECTION_BAND_ALIASES = {
     "HLSL30_2.0": {
-        "assets": {
-            "*": {
-                "nodata": NODATA,
-                "data_type": DTYPE,
-            },
-            "Fmask": {
-                "nodata": FMASK_NODATA,
-                "data_type": FMASK_DTYPE,
-            },
-        },
-        "aliases": {
-            "coastal_aerosol": "B01",
-            "blue": "B02",
-            "green": "B03",
-            "red": "B04",
-            "nir_narrow": "B05",
-            "swir_1": "B06",
-            "swir_2": "B07",
-            "cirrus": "B09",
-            "thermal_infrared_1": "B10",
-            "thermal": "B11",
-        },
+        "coastal_aerosol": "B01",
+        "blue": "B02",
+        "green": "B03",
+        "red": "B04",
+        "nir_narrow": "B05",
+        "swir_1": "B06",
+        "swir_2": "B07",
+        "cirrus": "B09",
+        "thermal_infrared_1": "B10",
+        "thermal": "B11",
     },
     "HLSS30_2.0": {
-        "assets": {
-            "*": {
-                "nodata": NODATA,
-                "data_type": DTYPE,
-            },
-            "Fmask": {
-                "nodata": FMASK_NODATA,
-                "data_type": FMASK_DTYPE,
-            },
-        },
-        "aliases": {
-            "coastal_aerosol": "B01",
-            "blue": "B02",
-            "green": "B03",
-            "red": "B04",
-            "red_edge_1": "B05",
-            "red_edge_2": "B06",
-            "red_edge_3": "B07",
-            "nir_broad": "B08",
-            "nir_narrow": "B8A",
-            "water_vapor": "B09",
-            "cirrus": "B10",
-            "swir_1": "B11",
-            "swir_2": "B12",
-        },
+        "coastal_aerosol": "B01",
+        "blue": "B02",
+        "green": "B03",
+        "red": "B04",
+        "red_edge_1": "B05",
+        "red_edge_2": "B06",
+        "red_edge_3": "B07",
+        "nir_broad": "B08",
+        "nir_narrow": "B8A",
+        "water_vapor": "B09",
+        "cirrus": "B10",
+        "swir_1": "B11",
+        "swir_2": "B12",
     },
 }
 
-# these are the ones that we are going to use
-DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
-DEFAULT_RESOLUTION = 30
-
-"""
-hls_bitmask:
-hls_mask_bitfields = [1, 2, 3]  # cloud shadow, adjacent to cloud shadow, cloud
-hls_bitmask = 0
-for field in hls_mask_bitfields:
-    hls_bitmask |= 1 << field
-"""
-HLS_BITMASK = 14
-
-DUCKDB_EXTENSION_DIRECTORY = Path(os.environ["HOME"]) / "duckdb-extensions"
-
-if not DUCKDB_EXTENSION_DIRECTORY.exists():
-    raise FileNotFoundError(f"{DUCKDB_EXTENSION_DIRECTORY} does not exist")
-
 
 def parse_datetime_utc(dt_string: str) -> datetime:
-    """
-    Parse a datetime string and ensure it has UTC timezone.
-    If no timezone is specified, assume UTC.
-
-    Args:
-        dt_string: ISO format datetime string (e.g., '2024-01-01T00:00:00' or '2024-01-01T00:00:00Z')
-
-    Returns:
-        datetime object with UTC timezone
-    """
+    """Parse an ISO datetime string and ensure it is timezone-aware UTC."""
     dt = datetime.fromisoformat(dt_string.replace("Z", "+00:00"))
-
-    # If the datetime is naive (no timezone), assume UTC
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-
     return dt
 
 
 def validate_crs_units_in_meters(crs: CRS) -> None:
-    """
-    Validate that the CRS uses meters as its linear unit.
-
-    Args:
-        crs: The CRS to validate
-
-    Raises:
-        ValueError: If the CRS does not use meters as its linear unit
-    """
-    # Get the axis info to check units
+    """Validate that the CRS uses meters as its linear unit."""
     axis_info = crs.axis_info
-
     if not axis_info:
         raise ValueError(
-            f"Cannot determine units for CRS '{crs}'. "
-            "Please provide a CRS with meter units."
+            f"Cannot determine units for CRS '{crs}'. Please provide a CRS with meter units."
         )
 
-    # Check if any axis uses non-meter units
     for axis in axis_info:
         unit_name = axis.unit_name.lower()
-        # Common meter unit names: "metre", "meter", "m"
         if unit_name not in ["metre", "meter", "m"]:
             raise ValueError(
                 f"CRS '{crs}' uses '{axis.unit_name}' units, but only CRS with meter units are supported. "
-                f"Please provide a CRS that uses meters (e.g., UTM zones, Web Mercator)."
+                "Please provide a CRS that uses meters (e.g., UTM zones, Web Mercator)."
             )
 
 
-def group_by_sensor_and_date(
-    item: Item,
-    parsed: ParsedItem,
-    idx: int,
-) -> str:
-    id_split = item.id.split(".")
-    sensor = id_split[1]
-    day = id_split[3][:7]
+def get_earthdata_token() -> str:
+    """Fetch an Earthdata bearer token from EARTHDATA_USERNAME/PASSWORD."""
+    username = os.getenv("EARTHDATA_USERNAME")
+    password = os.getenv("EARTHDATA_PASSWORD")
 
-    return f"{sensor}_{day}"
+    if not username or not password:
+        raise RuntimeError(
+            "HTTP access requires EARTHDATA_USERNAME and EARTHDATA_PASSWORD environment variables."
+        )
 
-
-def get_stac_items(
-    bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS
-) -> list[Item]:
-    logger.info("querying HLS archive")
-    client = DuckdbClient(
-        use_hive_partitioning=True,
-        extension_directory=DUCKDB_EXTENSION_DIRECTORY,
+    credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode(
+        "ascii"
     )
+    request = Request(
+        EARTHDATA_TOKEN_URL,
+        method="POST",
+        headers={"Authorization": f"Basic {credentials}"},
+    )
+    with urlopen(request, timeout=10) as response:  # noqa: S310
+        payload = json.loads(response.read().decode("utf-8"))
+
+    token = payload.get("access_token")
+    if not token:
+        raise RuntimeError("Earthdata token response did not contain access_token.")
+    return token
+
+
+def build_duckdb_client() -> DuckdbClient:
+    """Create a DuckDB client configured for the hive-partitioned HLS parquet archive."""
+    client = DuckdbClient(use_hive_partitioning=True)
     client.execute(
         """
         CREATE OR REPLACE SECRET secret (
@@ -208,128 +136,209 @@ def get_stac_items(
         );
         """
     )
-
-    items = []
-    for collection in HLS_COLLECTIONS:
-        items.extend(
-            client.search(
-                href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
-                datetime="/".join(
-                    dt.isoformat() for dt in [start_datetime, end_datetime]
-                ),
-                bbox=transform_bounds(
-                    src_crs=crs,
-                    dst_crs="epsg:4326",
-                    left=bbox[0],
-                    bottom=bbox[1],
-                    right=bbox[2],
-                    top=bbox[3],
-                ),
-                filter={
-                    "op": "and",
-                    "args": [
-                        {
-                            "op": "between",
-                            "args": [
-                                {"property": "year"},
-                                start_datetime.year,
-                                end_datetime.year,
-                            ],
-                        },
-                    ],
-                },
-            )
-        )
-
-    logger.info(f"found {len(items)} items")
-
-    return [Item.from_dict(item) for item in items]
+    return client
 
 
-async def run(
-    start_datetime: datetime,
-    end_datetime: datetime,
-    bbox: BBox,
-    crs: CRS,
-    output_dir: Path,
-    bands: list[str] = DEFAULT_BANDS,
-    resolution: int | float = DEFAULT_RESOLUTION,
-    direct_bucket_access: bool = False,
-):
-    items = get_stac_items(
-        bbox=bbox,
-        start_datetime=start_datetime,
-        end_datetime=end_datetime,
-        crs=crs,
+def build_http_store() -> HTTPStore:
+    """Create the authenticated HTTP store for LP DAAC HLS assets."""
+    token = get_earthdata_token()
+    return HTTPStore(
+        URL_PREFIX,
+        client_options={
+            "default_headers": {
+                "Authorization": f"Bearer {token}",
+            },
+        },
     )
 
-    rasterio_env = {}
+
+def build_s3_store() -> S3Store:
+    """Create the authenticated direct-S3 store for LP DAAC HLS assets."""
+    credential_provider = NasaEarthdataCredentialProvider(
+        credentials_url="https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials",
+    )
+    return S3Store(
+        bucket="lp-prod-protected",
+        credential_provider=credential_provider,
+    )
+
+
+def path_from_lpdaac_href(href: str) -> str:
+    """Translate an LP DAAC asset HREF into a bucket-relative object path."""
+    return urlparse(href).path.lstrip("/").removeprefix("lp-prod-protected/")
+
+
+def build_store_config(direct_bucket_access: bool) -> dict[str, Any]:
+    """Build lazycogs store kwargs for the requested access mode."""
     if direct_bucket_access:
-        maap = MAAP(maap_host="api.maap-project.org")
-        creds = maap.aws.earthdata_s3_credentials(
-            "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
+        logger.info("using direct S3 bucket access for HLS assets")
+        return {
+            "store": build_s3_store(),
+            "path_from_href": path_from_lpdaac_href,
+        }
+
+    logger.info("using authenticated HTTPS access for HLS assets")
+    return {"store": build_http_store()}
+
+
+def get_collection_band_names(collection: str, bands: list[str]) -> list[str]:
+    """Resolve requested shared band aliases to collection-specific HLS asset names."""
+    aliases = COLLECTION_BAND_ALIASES[collection]
+    missing = [band for band in bands if band not in aliases]
+    if missing:
+        raise ValueError(
+            f"Collection {collection} does not support requested bands {missing}."
         )
-        odc.stac.configure_rio(
-            cloud_defaults=True,
-            aws={
-                "aws_access_key_id": creds["accessKeyId"],
-                "aws_secret_access_key": creds["secretAccessKey"],
-                "aws_session_token": creds["sessionToken"],
-                "region_name": "us-west-2",
-            },
+    return [aliases[band] for band in bands]
+
+
+def datetime_range(start_datetime: datetime, end_datetime: datetime) -> str:
+    """Format the query datetime range for rustac/lazycogs."""
+    return f"{start_datetime.isoformat()}/{end_datetime.isoformat()}"
+
+
+def open_hls_collection(
+    collection: str,
+    *,
+    duckdb_client: DuckdbClient,
+    bbox: BBox,
+    crs: CRS,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    bands: list[str],
+    resolution: int | float,
+    store_kwargs: dict[str, Any],
+) -> tuple[xr.DataArray, xr.DataArray] | None:
+    """Open one HLS collection's spectral bands and Fmask as lazy arrays."""
+    href = HLS_STAC_GEOPARQUET_HREF.format(collection=collection)
+    collection_band_names = get_collection_band_names(collection, bands)
+    search_args = {
+        "href": href,
+        "datetime": datetime_range(start_datetime, end_datetime),
+        "duckdb_client": duckdb_client,
+    }
+
+    try:
+        spectral = lazycogs.open(
+            crs=crs,
+            bbox=bbox,
+            resolution=resolution,
+            time_period="P1D",
+            bands=collection_band_names,
+            chunks=CHUNKS,
+            dtype=DTYPE,
+            nodata=NODATA,
+            **store_kwargs,
+            **search_args,
         )
-        rasterio_env["session"] = AWSSession(
-            **{
-                "aws_access_key_id": creds["accessKeyId"],
-                "aws_secret_access_key": creds["secretAccessKey"],
-                "aws_session_token": creds["sessionToken"],
-                "region_name": "us-west-2",
-            }
+        fmask = lazycogs.open(
+            crs=crs,
+            bbox=bbox,
+            resolution=resolution,
+            time_period="P1D",
+            bands=["Fmask"],
+            chunks=CHUNKS,
+            dtype=FMASK_DTYPE,
+            nodata=FMASK_NODATA,
+            **store_kwargs,
+            **search_args,
+        ).squeeze("band", drop=True)
+    except ValueError as exc:
+        if "No STAC items matched the query" in str(exc):
+            logger.info("no matching items found for %s", collection)
+            return None
+        raise
+
+    spectral = spectral.assign_coords(band=bands)
+    return spectral, fmask
+
+
+def open_hls_stacks(
+    *,
+    bbox: BBox,
+    crs: CRS,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    bands: list[str],
+    resolution: int | float,
+    direct_bucket_access: bool,
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Open combined HLS spectral and Fmask stacks across both collections."""
+    duckdb_client = build_duckdb_client()
+    store_kwargs = build_store_config(direct_bucket_access)
+
+    spectral_arrays: list[xr.DataArray] = []
+    fmask_arrays: list[xr.DataArray] = []
+
+    for collection in COLLECTION_BAND_ALIASES:
+        opened = open_hls_collection(
+            collection,
+            duckdb_client=duckdb_client,
+            bbox=bbox,
+            crs=crs,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            bands=bands,
+            resolution=resolution,
+            store_kwargs=store_kwargs,
         )
-        for item in items:
-            for asset in item.assets.values():
-                if asset.href.startswith(URL_PREFIX):
-                    asset.href = asset.href.replace(URL_PREFIX, "s3://")
+        if opened is None:
+            continue
+        spectral, fmask = opened
+        spectral_arrays.append(spectral)
+        fmask_arrays.append(fmask)
 
-    logger.info("checking proj metadata")
-    fixed_count = 0
-    with rasterio.Env(**rasterio_env):
-        for item in items:
-            if (not item.ext.proj.shape) and (not item.ext.proj.transform):
-                fixed_count += 1
-                with rasterio.open(item.assets["Fmask"].href) as src:
-                    item.ext.proj.shape = src.shape
-                    item.ext.proj.transform = list(src.transform)
+    if not spectral_arrays or not fmask_arrays:
+        raise ValueError(
+            "No HLS items matched the query across HLSL30_2.0 or HLSS30_2.0."
+        )
 
-    logger.info(f"fixed proj metadata for {fixed_count} items")
+    spectral_stack = xr.concat(spectral_arrays, dim="time").sortby("time")
+    fmask_stack = xr.concat(fmask_arrays, dim="time").sortby("time")
+    logger.info(
+        "concatenated arrays: spectral dims=%s shape=%s sizes=%s; fmask dims=%s shape=%s sizes=%s",
+        spectral_stack.dims,
+        spectral_stack.shape,
+        dict(spectral_stack.sizes),
+        fmask_stack.dims,
+        fmask_stack.shape,
+        dict(fmask_stack.sizes),
+    )
+    # spectral_stack, fmask_stack = xr.align(spectral_stack, fmask_stack, join="exact")
+    #
+    return spectral_stack, fmask_stack
 
-    logger.info("loading into xarray via odc.stac")
-    stack = odc.stac.load(
-        items,
-        stac_cfg=HLS_ODC_STAC_CONFIG,
-        bands=list(set(bands + ["Fmask"])),
-        chunks={"x": 512, "y": 512},
-        groupby=group_by_sensor_and_date,
-        geobox=GeoBox.from_bbox(bbox=bbox, crs=crs, resolution=resolution, tight=True),
-    ).sortby("time")
 
-    mask = stack["Fmask"] & HLS_BITMASK
+def create_composite(
+    spectral_stack: xr.DataArray, fmask_stack: xr.DataArray
+) -> xr.DataArray:
+    """Apply the HLS Fmask QA mask and compute the temporal median composite."""
+    valid_mask = (fmask_stack & HLS_BITMASK) == 0
+    cloud_free = spectral_stack.where(valid_mask).where(spectral_stack != NODATA)
+    return cloud_free.median(dim="time", skipna=True).fillna(NODATA).compute()
 
-    cloud_free = stack[bands].where(mask == 0).where(stack != NODATA)
 
-    logger.info("computing median values")
-    composite = cloud_free.median(dim="time", skipna=True).fillna(NODATA).compute()
+def export_outputs(
+    composite: xr.DataArray,
+    *,
+    bands: list[str],
+    bbox: BBox,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    output_dir: Path,
+    crs: CRS,
+) -> None:
+    """Write per-band COGs and the output STAC item."""
+    assets: dict[str, Asset] = {}
+    transform = Affine(*composite.attrs["spatial:transform"])
 
-    assets = {}
     for band in bands:
         href = f"{band}.tif"
-        logger.info(f"exporting {href}")
-        da = composite[band]
-        da.rio.set_nodata(NODATA, inplace=True)
+        logger.info("exporting %s", href)
+        da = composite.sel(band=band, drop=True)
         da_to_export = da.rio.write_nodata(NODATA, encoded=True, inplace=False)
 
         output_file_path = output_dir / href
-
         da_to_export.rio.to_raster(
             output_file_path,
             driver="COG",
@@ -350,9 +359,7 @@ async def run(
         catalog_type=CatalogType.SELF_CONTAINED,
     )
 
-    # use one of the output files as a template for rio-stac
-    source_file = f"{output_dir}/{assets[bands[0]].href}"
-
+    source_file = str(output_dir / assets[bands[0]].href)
     item = create_stac_item(
         source=source_file,
         id="-".join(
@@ -370,38 +377,67 @@ async def run(
         },
     )
 
-    # replace auto-generated assets with our own
     item.assets = assets
-
     item.set_self_href(f"{output_dir}/item.json")
-
-    # finalize catalog and save to the output directory
     catalog.add_item(item)
     item.make_asset_hrefs_relative()
-
     catalog.normalize_and_save(
         root_href=str(output_dir),
         catalog_type=CatalogType.SELF_CONTAINED,
     )
 
 
+def run(
+    start_datetime: datetime,
+    end_datetime: datetime,
+    bbox: BBox,
+    crs: CRS,
+    output_dir: Path,
+    bands: list[str] = DEFAULT_BANDS,
+    resolution: int | float = DEFAULT_RESOLUTION,
+    direct_bucket_access: bool = False,
+) -> None:
+    """Generate the cloud-free temporal mosaic and write outputs."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    spectral_stack, fmask_stack = open_hls_stacks(
+        bbox=bbox,
+        crs=crs,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        bands=bands,
+        resolution=resolution,
+        direct_bucket_access=direct_bucket_access,
+    )
+    composite = create_composite(spectral_stack, fmask_stack)
+    export_outputs(
+        composite,
+        bands=bands,
+        bbox=bbox,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        output_dir=output_dir,
+        crs=crs,
+    )
+
+
 if __name__ == "__main__":
-    parse = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Queries the HLS STAC geoparquet archive and writes the result to a file"
     )
-    parse.add_argument(
+    parser.add_argument(
         "--start_datetime",
         help="start datetime in ISO format (e.g., 2024-01-01T00:00:00Z)",
         required=True,
         type=str,
     )
-    parse.add_argument(
+    parser.add_argument(
         "--end_datetime",
         help="end datetime in ISO format (e.g., 2024-12-31T23:59:59Z)",
         required=True,
         type=str,
     )
-    parse.add_argument(
+    parser.add_argument(
         "--bbox",
         help="bounding box (xmin, ymin, xmax, ymax)",
         required=True,
@@ -409,22 +445,25 @@ if __name__ == "__main__":
         type=float,
         metavar=("xmin", "ymin", "xmax", "ymax"),
     )
-    parse.add_argument(
+    parser.add_argument(
         "--crs",
         help="CRS definition of the bounding box coordinates",
         required=True,
         type=str,
     )
-    parse.add_argument(
+    parser.add_argument(
         "--output_dir", help="Directory in which to save output", required=True
     )
-    parse.add_argument(
+    parser.add_argument(
         "--direct_bucket_access",
-        help="Use direct S3 bucket access instead of HTTP URLs",
+        help=(
+            "Use direct LP DAAC S3 bucket access instead of HTTPS URLs. "
+            "run.sh enables this by default for DPS; omit it for local HTTPS smoke tests."
+        ),
         action="store_true",
         default=False,
     )
-    args = parse.parse_args()
+    args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     bbox = tuple(args.bbox)
@@ -433,41 +472,22 @@ if __name__ == "__main__":
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
 
-    logging.info(
-        f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
+    logger.info(
+        "running with start_datetime=%s end_datetime=%s bbox=%s crs=%s output_dir=%s direct_bucket_access=%s",
+        start_datetime,
+        end_datetime,
+        bbox,
+        crs,
+        output_dir,
+        args.direct_bucket_access,
     )
-    os.environ.update(GDAL_CONFIG)
 
-    logging.info(
-        f"running with start_datetime: {start_datetime}, end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
+    run(
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        bbox=bbox,
+        crs=crs,
+        output_dir=output_dir,
+        direct_bucket_access=args.direct_bucket_access,
     )
-
-    # Retry loop for handling intermittent failures
-    max_retries = 3
-    retry_delay = 5  # seconds
-
-    for attempt in range(max_retries):
-        try:
-            asyncio.run(
-                run(
-                    start_datetime=start_datetime,
-                    end_datetime=end_datetime,
-                    bbox=bbox,
-                    crs=crs,
-                    output_dir=output_dir,
-                    direct_bucket_access=args.direct_bucket_access,
-                )
-            )
-            logging.info("Successfully completed processing")
-            break
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait_time = retry_delay * (2**attempt)  # exponential backoff
-                logging.warning(
-                    f"Attempt {attempt + 1}/{max_retries} failed with error: {e}. "
-                    f"Retrying in {wait_time} seconds..."
-                )
-                time.sleep(wait_time)
-            else:
-                logging.error(f"All {max_retries} attempts failed. Last error: {e}")
-                raise
+    logger.info("Successfully completed processing")
