@@ -45,7 +45,7 @@ def run_wrapper_with_fake_uv(tmp_path, inputs):
     capture = tmp_path / "uv-args"
     fake_uv = tmp_path / "uv"
     fake_uv.write_text(
-        "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CAPTURE\"\n",
+        '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$CAPTURE"\n',
         encoding="utf-8",
     )
     fake_uv.chmod(0o755)
