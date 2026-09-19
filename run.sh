@@ -38,6 +38,6 @@ fi
 unset PROJ_LIB
 unset PROJ_DATA
 
-UV_PROJECT="${basedir}" uv run --no-dev "${basedir}/main.py" \
+UV_PROJECT="${basedir}" uv run --no-sync --no-dev "${basedir}/main.py" \
     "${main_args[@]}" \
     --output_dir="${output_dir}"

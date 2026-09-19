@@ -336,7 +336,11 @@ def export_outputs(
         href = f"{band}.tif"
         logger.info("exporting %s", href)
         da = composite.sel(band=band, drop=True)
-        da_to_export = da.rio.write_nodata(NODATA, encoded=True, inplace=False)
+        da_to_export = (
+            da.rio.write_crs(crs, inplace=False)
+            .rio.write_transform(transform, inplace=False)
+            .rio.write_nodata(NODATA, encoded=True, inplace=False)
+        )
 
         output_file_path = output_dir / href
         da_to_export.rio.to_raster(
@@ -362,6 +366,7 @@ def export_outputs(
     source_file = str(output_dir / assets[bands[0]].href)
     item = create_stac_item(
         source=source_file,
+        input_datetime=end_datetime,
         id="-".join(
             [
                 "_".join(str(int(x)) for x in bbox),
@@ -421,7 +426,8 @@ def run(
     )
 
 
-if __name__ == "__main__":
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line inputs without starting network or filesystem work."""
     parser = argparse.ArgumentParser(
         description="Queries the HLS STAC geoparquet archive and writes the result to a file"
     )
@@ -463,8 +469,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
+
+def main(argv: list[str] | None = None) -> None:
+    """Run the cloud-free mosaic command for parsed command-line inputs."""
+    args = parse_args(argv)
     output_dir = Path(args.output_dir)
     bbox = tuple(args.bbox)
     crs = CRS.from_string(args.crs)
@@ -491,3 +501,7 @@ if __name__ == "__main__":
         direct_bucket_access=args.direct_bucket_access,
     )
     logger.info("Successfully completed processing")
+
+
+if __name__ == "__main__":
+    main()
