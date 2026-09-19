@@ -1,0 +1,195 @@
+name: Release MAAP OGC application package
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: maap-ogc-production
+  cancel-in-progress: false
+
+env:
+  MAAP_OGC_PROCESSES_URL: https://api.maap-project.org/api/ogc/processes
+  MAAP_OGC_DEPLOYMENT_JOBS_URL: https://api.maap-project.org/api/ogc/deploymentJobs
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.*"
+          enable-cache: false
+
+      - name: Validate tagged release metadata and CWL
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "$RELEASE_TAG" = "v$version"
+          grep -Fqx "version = \"$version\"" pyproject.toml
+          grep -Fqx "version = \"$version\"" uv.lock
+          workflow=dps/hls-cloud-free-temporal-mosaic.cwl
+          grep -Fqx "s:softwareVersion: $version" "$workflow"
+          grep -Fqx "s:version: $version" "$workflow"
+          grep -Fqx "        dockerPull: ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG" "$workflow"
+          uvx --from cwltool cwltool --validate "$workflow"
+          uvx --with pyyaml --from ogc-ap-validator ap-validator --detail errors "$workflow"
+          uv run --frozen --group dev pytest
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}:${{ github.event.release.tag_name }}
+            ${{ env.IMAGE_PREFIX }}:${{ steps.revision.outputs.sha }}
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Register or update MAAP process
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$MAAP_TOKEN"
+          workflow=dps/hls-cloud-free-temporal-mosaic.cwl
+          commit_sha="$(git rev-parse HEAD)"
+          responses="$(mktemp -d)"
+          trap 'rm -rf "$responses"' EXIT
+          response="$responses/process.json"
+          headers="$responses/process.headers"
+          workflow_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$commit_sha/$workflow"
+          payload="{\"executionUnit\":{\"href\":\"$workflow_url\"}}"
+
+          status="$(curl --silent --show-error --dump-header "$headers" --output "$response" --write-out '%{http_code}' \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --header "proxy-ticket: $MAAP_TOKEN" \
+            --data "$payload" \
+            "$MAAP_OGC_PROCESSES_URL")"
+
+          if [ "$status" = "409" ]; then
+            process_id="$(jq --exit-status --raw-output '.additionalProperties.processID // .processID // .id' "$response")"
+            test -n "$process_id"
+            status="$(curl --silent --show-error --dump-header "$headers" --output "$response" --write-out '%{http_code}' \
+              --request PUT \
+              --header 'Content-Type: application/json' \
+              --header "proxy-ticket: $MAAP_TOKEN" \
+              --data "$payload" \
+              "$MAAP_OGC_PROCESSES_URL/$process_id")"
+            action=updated
+          elif [ "$status" = "200" ] || [ "$status" = "201" ] || [ "$status" = "202" ]; then
+            action=registered
+          else
+            echo "MAAP registration failed for $workflow with HTTP $status" >&2
+            exit 1
+          fi
+
+          process_id="$(jq --raw-output '.processID // .additionalProperties.processID // .id // empty' "$response" 2>/dev/null || true)"
+          pipeline_link="$(jq --raw-output '.processPipelineLink.href // empty' "$response" 2>/dev/null || true)"
+          printf 'MAAP %s %s: HTTP %s' "$workflow" "$action" "$status"
+          [ -z "$process_id" ] || printf ', process ID %s' "$process_id"
+          [ -z "$pipeline_link" ] || printf ', pipeline %s' "$pipeline_link"
+          printf '\n'
+
+          if [ "$status" != "202" ]; then
+            exit 0
+          fi
+
+          deployment_url="$(jq --raw-output '
+            (
+              .links[]?
+              | select(.rel == "monitor" and .type == "application/json")
+              | .href
+            ) //
+            .deploymentJobLink.href //
+            .additionalProperties.deploymentJobLink.href //
+            empty
+          ' "$response")"
+          if [ -z "$deployment_url" ]; then
+            deployment_url="$(awk 'BEGIN { IGNORECASE = 1 } /^location:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$headers")"
+          fi
+          if [ -z "$deployment_url" ]; then
+            echo "MAAP returned HTTP 202 without a deployment-status URL" >&2
+            exit 1
+          fi
+          case "$deployment_url" in
+            http://*|https://*) ;;
+            /*) deployment_url="${MAAP_OGC_DEPLOYMENT_JOBS_URL%/deploymentJobs}$deployment_url" ;;
+            *) deployment_url="$MAAP_OGC_DEPLOYMENT_JOBS_URL/$deployment_url" ;;
+          esac
+
+          deadline=$((SECONDS + 1800))
+          while :; do
+            deployment_response="$responses/deployment-status.json"
+            curl --fail-with-body --silent --show-error --output "$deployment_response" \
+              --header "proxy-ticket: $MAAP_TOKEN" \
+              "$deployment_url"
+            deployment_status="$(jq --raw-output '
+              .status // .state // .deploymentStatus // .additionalProperties.status // empty
+            ' "$deployment_response" | tr '[:upper:]' '[:lower:]')"
+            case "$deployment_status" in
+              success|successful|succeeded|complete|completed|deployed)
+                printf 'MAAP deployment succeeded: %s\n' "$deployment_status"
+                break
+                ;;
+              failed|failure|error|dismissed|cancelled|canceled)
+                echo "MAAP deployment failed: $deployment_status" >&2
+                exit 1
+                ;;
+              *)
+                if [ "$SECONDS" -ge "$deadline" ]; then
+                  echo "MAAP deployment timed out; last status: ${deployment_status:-missing}" >&2
+                  exit 1
+                fi
+                printf 'MAAP deployment is %s; polling again in 10 seconds\n' \
+                  "${deployment_status:-unknown}"
+                sleep 10
+                ;;
+            esac
+          done
