@@ -9,7 +9,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "dps/hls-cloud-free-temporal-mosaic.cwl"
+          "path": "hls-cloud-free-temporal-mosaic.cwl"
         },
         {
           "type": "toml",

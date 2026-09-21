@@ -464,7 +464,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--direct_bucket_access",
         help=(
             "Use direct LP DAAC S3 bucket access instead of HTTPS URLs. "
-            "run.sh enables this by default for DPS; omit it for local HTTPS smoke tests."
+            "The OGC Application Package enables this by default."
         ),
         action="store_true",
         default=False,

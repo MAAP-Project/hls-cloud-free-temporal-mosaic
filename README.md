@@ -13,7 +13,7 @@ The HLS STAC geoparquet archive is experimental and can lag CMR by a few days. S
 The CWL is the sole MAAP registration interface:
 
 ```text
-dps/hls-cloud-free-temporal-mosaic.cwl
+hls-cloud-free-temporal-mosaic.cwl
 ```
 
 Release automation registers that OGC Application Package and points it at the matching standalone, versioned image:
@@ -22,7 +22,7 @@ Release automation registers that OGC Application Package and points it at the m
 ghcr.io/maap-project/hls-cloud-free-temporal-mosaic:v0.2.0
 ```
 
-MAAP does not build the image or install this repository from a legacy descriptor. The `run.sh` wrapper remains useful for local runs and for the container command invoked by the CWL.
+MAAP does not build the image or install this repository from a legacy descriptor. The CWL invokes `main.py` in the image directly.
 
 ## Build, run, and test
 
@@ -30,33 +30,6 @@ Install the locked development environment for local work:
 
 ```bash
 uv sync --frozen
-```
-
-The wrapper keeps the historical four positional inputs for local and existing DPS callers:
-
-```bash
-./run.sh \
-  "2025-05-01T00:00:00Z" \
-  "2025-05-31T23:59:59Z" \
-  "500000 5000000 600000 5100000" \
-  "EPSG:32615"
-```
-
-It also accepts the named input form used by the OGC package:
-
-```bash
-./run.sh \
-  --start_datetime "2025-05-01T00:00:00Z" \
-  --end_datetime "2025-05-31T23:59:59Z" \
-  --bbox 500000 5000000 600000 5100000 \
-  --crs "EPSG:32615"
-```
-
-Production DPS runs use direct LP DAAC S3 access by default. The local smoke-test path deliberately uses HTTPS instead:
-
-```bash
-./smoketest.sh
-# equivalent to: DIRECT_BUCKET_ACCESS=false ./run.sh ...
 ```
 
 For direct Python development, `main.py` defaults to HTTPS. Add `--direct_bucket_access` to exercise the deployed direct-S3 path:
@@ -76,16 +49,32 @@ The standalone image is built and published by release automation. A local `uv s
 
 The parquet query uses DuckDB's AWS credential chain to access the MAAP-hosted archive.
 
-- **Deployed DPS / OGC jobs:** use `direct_bucket_access=True` and read `s3://lp-prod-protected/...` through an authenticated `S3Store`. This path is intended for DPS workers in `us-west-2` and uses `NasaEarthdataCredentialProvider` for short-lived LP DAAC credentials.
-- **Local HTTPS smoke tests:** use `direct_bucket_access=False` and read LP DAAC URLs through an authenticated `HTTPStore`. Set credentials before running the smoke test:
+- **Deployed DPS / OGC jobs:** `direct_bucket_access` defaults to `true`, reading `s3://lp-prod-protected/...` through an authenticated `S3Store`. This path is intended for DPS workers in `us-west-2` and uses `NasaEarthdataCredentialProvider` for short-lived LP DAAC credentials.
+- **Local CWL runs:** override `direct_bucket_access` to `false` to read LP DAAC URLs through an authenticated `HTTPStore`.
 
-  ```bash
-  export EARTHDATA_USERNAME="your-earthdata-username"
-  export EARTHDATA_PASSWORD="your-earthdata-password"
-  ./smoketest.sh
-  ```
+For example, with Docker available, create a local job file:
 
-Do not put Earthdata credentials, MAAP tokens, or other secrets in the CWL or job inputs. The only supported reason to set `DIRECT_BUCKET_ACCESS=false` is local testing where direct S3 is unavailable.
+```yaml
+# local-job.yml
+start_datetime: "2025-05-01T00:00:00Z"
+end_datetime: "2025-05-31T23:59:59Z"
+bbox: "500000 5000000 550000 5050000"
+crs: "EPSG:32615"
+direct_bucket_access: false
+```
+
+Then pass Earthdata credentials through the CWL runner:
+
+```bash
+export EARTHDATA_USERNAME="your-earthdata-username"
+export EARTHDATA_PASSWORD="your-earthdata-password"
+uvx --from cwltool cwltool \
+  --preserve-environment EARTHDATA_USERNAME \
+  --preserve-environment EARTHDATA_PASSWORD \
+  hls-cloud-free-temporal-mosaic.cwl local-job.yml
+```
+
+Do not put Earthdata credentials, MAAP tokens, or other secrets in the CWL or job inputs.
 
 ## Submit an OGC job
 

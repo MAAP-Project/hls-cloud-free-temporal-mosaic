@@ -39,6 +39,11 @@ $graph:
         label: CRS
         doc: Coordinate reference system for the bounding box.
         type: string
+      direct_bucket_access:
+        label: Direct bucket access
+        doc: Read protected LP DAAC assets through S3 rather than HTTPS.
+        type: boolean
+        default: true
     outputs:
       output:
         type: Directory
@@ -51,6 +56,7 @@ $graph:
           end_datetime: end_datetime
           bbox: bbox
           crs: crs
+          direct_bucket_access: direct_bucket_access
         out:
           - output
   - class: CommandLineTool
@@ -66,7 +72,11 @@ $graph:
         ramMin: 16384
         coresMin: 4
         outdirMin: 8192
-    baseCommand: /app/hls-cloud-free-temporal-mosaic/run.sh
+    baseCommand:
+      - /app/hls-cloud-free-temporal-mosaic/.venv/bin/python
+      - /app/hls-cloud-free-temporal-mosaic/main.py
+      - --output_dir
+      - output
     successCodes:
       - 0
     inputs:
@@ -90,6 +100,11 @@ $graph:
         inputBinding:
           position: 4
           prefix: '--crs'
+      direct_bucket_access:
+        type: boolean
+        default: true
+        inputBinding:
+          prefix: '--direct_bucket_access'
     outputs:
       output:
         type: Directory

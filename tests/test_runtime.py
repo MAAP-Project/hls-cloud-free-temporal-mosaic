@@ -1,6 +1,4 @@
 import json
-import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,91 +39,15 @@ def test_parse_args_accepts_named_inputs_without_running_work():
     assert args.direct_bucket_access is False
 
 
-def run_wrapper_with_fake_uv(tmp_path, inputs):
-    capture = tmp_path / "uv-args"
-    fake_uv = tmp_path / "uv"
-    fake_uv.write_text(
-        '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$CAPTURE"\n',
-        encoding="utf-8",
+def test_application_package_invokes_main_with_direct_access_default():
+    application_package = (ROOT / "hls-cloud-free-temporal-mosaic.cwl").read_text()
+
+    assert "run.sh" not in application_package
+    assert "/app/hls-cloud-free-temporal-mosaic/main.py" in application_package
+    assert (
+        "direct_bucket_access:\n        type: boolean\n        default: true"
+        in application_package
     )
-    fake_uv.chmod(0o755)
-    env = os.environ | {
-        "CAPTURE": str(capture),
-        "DIRECT_BUCKET_ACCESS": "false",
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-    }
-    subprocess.run(
-        ["bash", str(ROOT / "run.sh"), *inputs],
-        cwd=tmp_path,
-        env=env,
-        check=True,
-    )
-    return capture.read_bytes().rstrip(b"\0").split(b"\0")
-
-
-def test_wrapper_adapts_positional_inputs_and_skips_runtime_sync(tmp_path):
-    args = run_wrapper_with_fake_uv(
-        tmp_path,
-        [
-            "2024-01-01T00:00:00Z",
-            "2024-01-31T23:59:59Z",
-            "500000 5000000 500060 5000060",
-            "EPSG:32615",
-        ],
-    )
-
-    assert args == [
-        b"run",
-        b"--no-sync",
-        b"--no-dev",
-        str(ROOT / "main.py").encode(),
-        b"--start_datetime",
-        b"2024-01-01T00:00:00Z",
-        b"--end_datetime",
-        b"2024-01-31T23:59:59Z",
-        b"--bbox",
-        b"500000",
-        b"5000000",
-        b"500060",
-        b"5000060",
-        b"--crs",
-        b"EPSG:32615",
-        b"--output_dir=output",
-    ]
-
-
-def test_wrapper_passes_named_inputs_through(tmp_path):
-    args = run_wrapper_with_fake_uv(
-        tmp_path,
-        [
-            "--start_datetime",
-            "2024-01-01T00:00:00Z",
-            "--end_datetime",
-            "2024-01-31T23:59:59Z",
-            "--bbox",
-            "500000",
-            "5000000",
-            "500060",
-            "5000060",
-            "--crs",
-            "EPSG:32615",
-        ],
-    )
-
-    assert args[4:] == [
-        b"--start_datetime",
-        b"2024-01-01T00:00:00Z",
-        b"--end_datetime",
-        b"2024-01-31T23:59:59Z",
-        b"--bbox",
-        b"500000",
-        b"5000000",
-        b"500060",
-        b"5000060",
-        b"--crs",
-        b"EPSG:32615",
-        b"--output_dir=output",
-    ]
 
 
 def synthetic_stacks():

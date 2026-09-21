@@ -39,7 +39,7 @@ jobs:
           test "$RELEASE_TAG" = "v$version"
           grep -Fqx "version = \"$version\"" pyproject.toml
           grep -Fqx "version = \"$version\"" uv.lock
-          workflow=dps/hls-cloud-free-temporal-mosaic.cwl
+          workflow=hls-cloud-free-temporal-mosaic.cwl
           grep -Fqx "s:softwareVersion: $version" "$workflow"
           grep -Fqx "s:version: $version" "$workflow"
           grep -Fqx "        dockerPull: ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG" "$workflow"
@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$MAAP_TOKEN"
-          workflow=dps/hls-cloud-free-temporal-mosaic.cwl
+          workflow=hls-cloud-free-temporal-mosaic.cwl
           commit_sha="$(git rev-parse HEAD)"
           responses="$(mktemp -d)"
           trap 'rm -rf "$responses"' EXIT

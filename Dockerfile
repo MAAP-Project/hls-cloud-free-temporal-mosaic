@@ -12,5 +12,4 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-COPY main.py run.sh ./
-RUN chmod +x run.sh
+COPY main.py ./

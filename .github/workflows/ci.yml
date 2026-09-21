@@ -28,8 +28,8 @@ jobs:
         run: |
           set -euo pipefail
           uv run --frozen --group dev pre-commit run --all-files
-          uvx --from cwltool cwltool --validate dps/hls-cloud-free-temporal-mosaic.cwl
-          uvx --with pyyaml --from ogc-ap-validator ap-validator --detail errors dps/hls-cloud-free-temporal-mosaic.cwl
+          uvx --from cwltool cwltool --validate hls-cloud-free-temporal-mosaic.cwl
+          uvx --with pyyaml --from ogc-ap-validator ap-validator --detail errors hls-cloud-free-temporal-mosaic.cwl
           uv run --frozen --group dev pytest
 
   container:
@@ -46,7 +46,9 @@ jobs:
           set -euo pipefail
           image=hls-cloud-free-temporal-mosaic
           docker build --tag "$image" .
-          docker run --rm "$image" /app/hls-cloud-free-temporal-mosaic/run.sh --help
+          docker run --rm "$image" \
+            /app/hls-cloud-free-temporal-mosaic/.venv/bin/python \
+            /app/hls-cloud-free-temporal-mosaic/main.py --help
 
   publish-latest:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
