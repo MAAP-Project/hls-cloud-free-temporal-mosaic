@@ -132,9 +132,42 @@ def test_export_writes_georeferenced_cog_and_self_contained_stac(tmp_path):
         np.testing.assert_array_equal(dataset.read(1), [[1, NODATA], [5, 5]])
 
     catalog = json.loads((tmp_path / "catalog.json").read_text())
-    item_href = next(link["href"] for link in catalog["links"] if link["rel"] == "item")
-    item = json.loads((tmp_path / item_href).read_text())
-    assert item["assets"]["red"]["href"] == "../red.tif"
+    collection_links = [link for link in catalog["links"] if link["rel"] == "child"]
+    assert len(collection_links) == 1
+
+    collection_href = collection_links[0]["href"]
+    collection_path = tmp_path / collection_href
+    collection = json.loads(collection_path.read_text())
+    assert collection["id"] == "hls-cloud-free-temporal-mosaic"
+    assert collection["title"] == "HLS Cloud-Free Temporal Mosaic"
+    assert collection["license"] == "other"
+    assert collection["extent"]["spatial"]["bbox"] == [[-180.0, -90.0, 180.0, 90.0]]
+    assert collection["extent"]["temporal"]["interval"] == [[None, None]]
+    assert collection["item_assets"] == {
+        "red": {
+            "description": "median red band value from cloud-free pixels in the temporal mosaic",
+            "roles": ["data"],
+            "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+        }
+    }
+    assert {
+        (link["rel"], link["href"])
+        for link in collection["links"]
+        if link["rel"] in {"documentation", "source"}
+    } == {
+        (
+            "documentation",
+            "https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic",
+        ),
+        ("source", "https://doi.org/10.5067/HLS/HLSL30.002"),
+        ("source", "https://doi.org/10.5067/HLS/HLSS30.002"),
+    }
+
+    item_links = [link for link in collection["links"] if link["rel"] == "item"]
+    assert len(item_links) == 1
+    item = json.loads((collection_path.parent / item_links[0]["href"]).read_text())
+    assert item["collection"] == collection["id"]
+    assert item["assets"]["red"]["href"] == "../../red.tif"
     assert item["properties"]["proj:epsg"] == 32615
     assert item["properties"]["proj:shape"] == [2, 2]
     assert item["properties"]["proj:transform"] == list(transform)

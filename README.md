@@ -113,13 +113,15 @@ print(response.headers["Location"])
 
 ## Output contract
 
-The implementation creates one COG per requested band and then calls `Catalog.normalize_and_save()` with a self-contained catalog rooted at the output directory. With the current `pystac` layout strategy, a successful run contains:
+The implementation creates one COG per requested band and writes a self-contained STAC catalog rooted at the output directory. A successful run contains:
 
 ```text
 output/
 ├── catalog.json
-├── <item-id>/
-│   └── <item-id>.json
+├── hls-cloud-free-temporal-mosaic/
+│   ├── collection.json
+│   └── <item-id>/
+│       └── <item-id>.json
 ├── red.tif
 ├── green.tif
 ├── blue.tif
@@ -128,7 +130,7 @@ output/
 └── swir_2.tif
 ```
 
-The item ID is derived from the projected bounding box and date range. The catalog links to the STAC item, and the item links to the band assets. The output is therefore a catalog plus a STAC item; it is not only a promised root-level `item.json`.
+The hierarchy is `Catalog -> Collection -> Item`. The collection has stable algorithm metadata, global/open extent, `item_assets` definitions for the output COG bands, links to this repository and the HLSL30 2.0 and HLSS30 2.0 source collections, and the STAC `other` license value because this output contract does not assert a redistribution license. The item ID is derived from the projected bounding box and date range, and the item links to the band assets.
 
 ## Release and recovery
 
