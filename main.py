@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -426,6 +427,22 @@ def run(
     )
 
 
+def parse_bbox(value: str) -> list[float]:
+    """Parse four finite, space-separated bounding-box coordinates."""
+    try:
+        bbox = [float(coordinate) for coordinate in value.split()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "bbox must contain exactly four finite numeric coordinates"
+        ) from exc
+
+    if len(bbox) != 4 or not all(math.isfinite(coordinate) for coordinate in bbox):
+        raise argparse.ArgumentTypeError(
+            "bbox must contain exactly four finite numeric coordinates"
+        )
+    return bbox
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line inputs without starting network or filesystem work."""
     parser = argparse.ArgumentParser(
@@ -445,11 +462,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--bbox",
-        help="bounding box (xmin, ymin, xmax, ymax)",
+        help="space-separated bounding box (xmin, ymin, xmax, ymax)",
         required=True,
-        nargs=4,
-        type=float,
-        metavar=("xmin", "ymin", "xmax", "ymax"),
+        type=parse_bbox,
+        metavar="BBOX",
     )
     parser.add_argument(
         "--crs",
