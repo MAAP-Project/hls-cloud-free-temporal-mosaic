@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.0...v0.3.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* include a STAC collection ([#11](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/11)) ([7faf371](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/7faf37166971915441983aa528b42284627a8924))
+* parse OGC bbox as one argument ([#9](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/9)) ([75b5092](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/75b509295e7a0d032f7080600dde0cf78bfd7ef5))
+
 ## [0.3.0](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.2.0...v0.3.0) (2026-09-21)
 
 

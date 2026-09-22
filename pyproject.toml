@@ -2,7 +2,7 @@
 name = "hls-cloud-free-temporal-mosaic"
 description = "Generate cloud-free temporal mosaics from HLS data"
 readme = "README.md"
-version = "0.3.0"
+version = "0.3.1"
 requires-python = ">=3.12"
 
 dependencies = [
