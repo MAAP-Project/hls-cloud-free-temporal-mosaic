@@ -19,7 +19,19 @@ from affine import Affine
 from obstore.auth.earthdata import NasaEarthdataCredentialProvider
 from obstore.store import HTTPStore, S3Store
 from pyproj import CRS
-from pystac import Asset, Catalog, CatalogType, MediaType
+from pystac import (
+    Asset,
+    Catalog,
+    CatalogType,
+    Collection,
+    Extent,
+    ItemAssetDefinition,
+    Link,
+    MediaType,
+    Provider,
+    SpatialExtent,
+    TemporalExtent,
+)
 from rio_stac import create_stac_item
 from rustac import DuckdbClient
 
@@ -363,6 +375,59 @@ def export_outputs(
         description="DPS",
         catalog_type=CatalogType.SELF_CONTAINED,
     )
+    collection = Collection(
+        id="hls-cloud-free-temporal-mosaic",
+        title="HLS Cloud-Free Temporal Mosaic",
+        description=(
+            "Cloud-free temporal mosaics of HLS surface reflectance. "
+            "The algorithm masks cloud and cloud-shadow pixels using HLS Fmask "
+            "quality flags, then computes a per-pixel median reflectance composite."
+        ),
+        extent=Extent(
+            spatial=SpatialExtent([[-180.0, -90.0, 180.0, 90.0]]),
+            temporal=TemporalExtent([[None, None]]),
+        ),
+        license="other",
+        keywords=["HLS", "cloud-free", "temporal mosaic", "Fmask"],
+        providers=[
+            Provider(
+                name="MAAP Project",
+                roles=["processor"],
+                url="https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic",
+            )
+        ],
+    )
+    collection.item_assets = {
+        band: ItemAssetDefinition.create(
+            title=assets[band].title,
+            description=assets[band].description,
+            media_type=assets[band].media_type,
+            roles=assets[band].roles,
+        )
+        for band in bands
+    }
+    collection.add_link(
+        Link(
+            rel="documentation",
+            target="https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic",
+            title="Algorithm source repository",
+        )
+    )
+    collection.add_link(
+        Link(
+            rel="source",
+            target="https://doi.org/10.5067/HLS/HLSL30.002",
+            title="HLSL30 2.0",
+        )
+    )
+    collection.add_link(
+        Link(
+            rel="source",
+            target="https://doi.org/10.5067/HLS/HLSS30.002",
+            title="HLSS30 2.0",
+        )
+    )
+    catalog.add_child(collection)
 
     source_file = str(output_dir / assets[bands[0]].href)
     item = create_stac_item(
@@ -385,7 +450,7 @@ def export_outputs(
 
     item.assets = assets
     item.set_self_href(f"{output_dir}/item.json")
-    catalog.add_item(item)
+    collection.add_item(item)
     item.make_asset_hrefs_relative()
     catalog.normalize_and_save(
         root_href=str(output_dir),
