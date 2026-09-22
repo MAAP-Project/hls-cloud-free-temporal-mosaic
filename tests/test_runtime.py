@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 import xarray as xr
 from affine import Affine
@@ -23,10 +24,7 @@ def test_parse_args_accepts_named_inputs_without_running_work():
             "--end_datetime",
             "2024-01-31T23:59:59Z",
             "--bbox",
-            "500000",
-            "5000000",
-            "500060",
-            "5000060",
+            "500000 5000000 500060 5000060",
             "--crs",
             "EPSG:32615",
             "--output_dir",
@@ -37,6 +35,25 @@ def test_parse_args_accepts_named_inputs_without_running_work():
     assert args.bbox == [500000.0, 5000000.0, 500060.0, 5000060.0]
     assert args.crs == "EPSG:32615"
     assert args.direct_bucket_access is False
+
+
+@pytest.mark.parametrize("bbox", ["1 2 3", "1 2 3 4 5", "1 2 nope 4", "1 2 nan 4"])
+def test_parse_args_rejects_invalid_bbox(bbox):
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--start_datetime",
+                "2024-01-01T00:00:00Z",
+                "--end_datetime",
+                "2024-01-31T23:59:59Z",
+                "--bbox",
+                bbox,
+                "--crs",
+                "EPSG:32615",
+                "--output_dir",
+                "/tmp/output",
+            ]
+        )
 
 
 def test_application_package_invokes_main_with_direct_access_default():

@@ -38,7 +38,7 @@ For direct Python development, `main.py` defaults to HTTPS. Add `--direct_bucket
 uv run --frozen main.py \
   --start_datetime "2025-05-01T00:00:00Z" \
   --end_datetime "2025-05-31T23:59:59Z" \
-  --bbox 500000 5000000 600000 5100000 \
+  --bbox "500000 5000000 600000 5100000" \
   --crs "EPSG:32615" \
   --output_dir /tmp/hls-output
 ```
