@@ -11,6 +11,7 @@ dependencies = [
     "obstore>=0.9.5",
     "pyproj>=3.7.2",
     "pystac>=1.14.1",
+    "requests>=2.32.5",
     "rio-stac>=0.10.1",
     "rioxarray>=0.20.0",
     "rustac[duckdb-extensions]>=0.9.11",
