@@ -141,21 +141,30 @@ jobs:
             exit 0
           fi
 
+          deployment_id="$(jq --raw-output '
+            .deploymentID // .deploymentJobID // .deploymentJobId // empty
+          ' "$response")"
           deployment_url="$(jq --raw-output '
-            (
-              .links[]?
-              | select(.rel == "monitor" and .type == "application/json")
-              | .href
-            ) //
             .deploymentJobLink.href //
             .additionalProperties.deploymentJobLink.href //
+            (
+              [.links[]?
+               | select(.rel == "monitor" and (.href | test("/deploymentJobs/"; "i")))
+               | .href] | first
+            ) //
             empty
           ' "$response")"
-          if [ -z "$deployment_url" ]; then
-            deployment_url="$(awk 'BEGIN { IGNORECASE = 1 } /^location:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$headers")"
+          if [ -z "$deployment_url" ] && [ -n "$deployment_id" ]; then
+            deployment_url="$MAAP_OGC_DEPLOYMENT_JOBS_URL/$deployment_id"
           fi
           if [ -z "$deployment_url" ]; then
-            echo "MAAP returned HTTP 202 without a deployment-status URL" >&2
+            location="$(awk 'BEGIN { IGNORECASE = 1 } /^location:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$headers")"
+            case "$location" in
+              */deploymentJobs/*|*/deploymentjobs/*) deployment_url="$location" ;;
+            esac
+          fi
+          if [ -z "$deployment_url" ]; then
+            echo "MAAP returned HTTP 202 without a deployment-job status URL or ID" >&2
             exit 1
           fi
           case "$deployment_url" in
@@ -163,13 +172,32 @@ jobs:
             /*) deployment_url="${MAAP_OGC_DEPLOYMENT_JOBS_URL%/deploymentJobs}$deployment_url" ;;
             *) deployment_url="$MAAP_OGC_DEPLOYMENT_JOBS_URL/$deployment_url" ;;
           esac
+          printf 'Polling MAAP deployment status: %s\n' "$deployment_url"
 
           deadline=$((SECONDS + 1800))
+          not_found_attempts=0
           while :; do
             deployment_response="$responses/deployment-status.json"
-            curl --fail-with-body --silent --show-error --output "$deployment_response" \
+            poll_status="$(curl --silent --show-error --output "$deployment_response" --write-out '%{http_code}' \
               --header "proxy-ticket: $MAAP_TOKEN" \
-              "$deployment_url"
+              "$deployment_url")"
+            if [ "$poll_status" = "404" ]; then
+              not_found_attempts=$((not_found_attempts + 1))
+              if [ "$not_found_attempts" -ge 12 ]; then
+                echo "MAAP deployment status URL still returned 404: $deployment_url" >&2
+                cat "$deployment_response" >&2
+                exit 1
+              fi
+              printf 'MAAP deployment status is not available yet (HTTP 404); polling again in 10 seconds\n'
+              sleep 10
+              continue
+            fi
+            if [[ "$poll_status" != 2?? ]]; then
+              echo "MAAP deployment status request failed with HTTP $poll_status" >&2
+              cat "$deployment_response" >&2
+              exit 1
+            fi
+
             deployment_status="$(jq --raw-output '
               .status // .state // .deploymentStatus // .additionalProperties.status // empty
             ' "$deployment_response" | tr '[:upper:]' '[:lower:]')"

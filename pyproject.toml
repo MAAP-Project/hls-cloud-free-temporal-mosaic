@@ -6,15 +6,18 @@ version = "0.3.1"
 requires-python = ">=3.12"
 
 dependencies = [
+    "affine>=2.4.0",
     "dask>=2025.10.0",
     "lazycogs>=0.5.0",
     "obstore>=0.9.5",
     "pyproj>=3.7.2",
     "pystac>=1.14.1",
+    "requests>=2.32.5",
     "rio-stac>=0.10.1",
     "rioxarray>=0.20.0",
     "rustac[duckdb-extensions]>=0.9.11",
     "shapely>=2.1.2",
+    "xarray>=2026.4.0",
 ]
 
 [dependency-groups]
