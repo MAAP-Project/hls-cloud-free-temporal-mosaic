@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.1...v0.3.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* declare all dependencies ([#12](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/12)) ([5b6b75c](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/5b6b75c85e9d3d4711e2a7a2db139a48d1277780))
+
 ## [0.3.1](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.0...v0.3.1) (2026-09-22)
 
 
