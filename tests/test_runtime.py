@@ -101,7 +101,7 @@ def test_item_id_is_stable_and_includes_composite_method():
         datetime(2025, 5, 1, tzinfo=UTC),
         datetime(2025, 5, 31, 23, 59, 59, tzinfo=UTC),
     )
-    assert item_id(*args) == "hls-T15TYJ-20250501-20250531-median-v1"
+    assert item_id(*args) == "hls-composite-T15TYJ-20250501-20250531-lower-median-v1"
     assert item_id(*args) == item_id(*args)
 
 
@@ -415,10 +415,20 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         link["href"] for link in collection["links"] if link["rel"] == "item"
     )
     item = json.loads(item_path.read_text())
-    assert item["id"] == "hls-T15TYJ-20240101-20240131-median-v1"
-    assert item["properties"]["hls:tile_id"] == "T15TYJ"
-    assert item["properties"]["hls:bands"] == ["red"]
-    assert item["properties"]["hls:composite"] == "median-v1"
+    assert item["id"] == "hls-composite-T15TYJ-20240101-20240131-lower-median-v1"
+    assert "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json" in item[
+        "stac_extensions"
+    ]
+    assert item["properties"]["mgrs:utm_zone"] == 15
+    assert item["properties"]["mgrs:latitude_band"] == "T"
+    assert item["properties"]["mgrs:grid_square"] == "YJ"
+    assert item["properties"]["hls-composite:method"] == "lower-median-v1"
+    assert item["properties"]["hls-composite:mask"] == (
+        "Fmask bitmask 14 equals zero and spectral nodata is excluded"
+    )
+    assert item["properties"]["hls-composite:source_item_ids"] == [
+        "HLS.S30.T15TYJ.2024001T000000.v2.0"
+    ]
     assert item["properties"]["start_datetime"] == "2024-01-01T00:00:00Z"
     assert item["properties"]["end_datetime"] == "2024-01-31T23:59:59Z"
     assert item["properties"]["proj:shape"] == [2, 2]

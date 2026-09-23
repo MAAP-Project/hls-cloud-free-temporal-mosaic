@@ -57,7 +57,8 @@ NODATA = -9999
 INT16_SENTINEL = -32768
 FMASK_NODATA = 255
 HLS_BITMASK = 14
-COMPOSITE_ID = "median-v1"
+COMPOSITE_METHOD = "lower-median-v1"
+MGRS_EXTENSION_URL = "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json"
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
 LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
 EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
@@ -551,7 +552,7 @@ def create_composite(
 
 def item_id(tile_id: str, start_datetime: datetime, end_datetime: datetime) -> str:
     """Return the deterministic identity for one tile, interval, and method."""
-    return f"hls-{normalize_tile_id(tile_id)}-{start_datetime:%Y%m%d}-{end_datetime:%Y%m%d}-{COMPOSITE_ID}"
+    return f"hls-composite-{normalize_tile_id(tile_id)}-{start_datetime:%Y%m%d}-{end_datetime:%Y%m%d}-{COMPOSITE_METHOD}"
 
 
 def export_outputs(
@@ -652,6 +653,7 @@ def export_outputs(
     catalog.add_child(collection)
 
     source_file = str(output_dir / assets[bands[0]].href)
+    normalized_tile_id = normalize_tile_id(tile_id)
     item = create_stac_item(
         source=source_file,
         input_datetime=None,
@@ -661,16 +663,15 @@ def export_outputs(
             "datetime": None,
             "start_datetime": format_datetime(start_datetime),
             "end_datetime": format_datetime(end_datetime),
-            "hls:tile_id": normalize_tile_id(tile_id),
-            "hls:bands": bands,
-            "hls:composite": COMPOSITE_ID,
-            "hls:reducer": "lower-median",
-            "hls:mask": "Fmask bitmask 14 equals zero and spectral nodata is excluded",
-            "hls:time_grouping": "P1D",
-            "hls:daily_sampling": "first-valid per collection after datetime,id ordering",
-            "hls:source_item_ids": source_item_ids,
+            "mgrs:utm_zone": int(normalized_tile_id[1:3]),
+            "mgrs:latitude_band": normalized_tile_id[3],
+            "mgrs:grid_square": normalized_tile_id[4:],
+            "hls-composite:method": COMPOSITE_METHOD,
+            "hls-composite:mask": "Fmask bitmask 14 equals zero and spectral nodata is excluded",
+            "hls-composite:source_item_ids": source_item_ids,
         },
     )
+    item.stac_extensions.append(MGRS_EXTENSION_URL)
     item.assets = {}
     for band, asset in assets.items():
         item.add_asset(band, asset)
