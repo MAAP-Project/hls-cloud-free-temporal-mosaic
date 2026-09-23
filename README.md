@@ -4,7 +4,7 @@ Create cloud-free composite images from temporal mosaics of HLS granules using t
 
 ## About
 
-The algorithm queries HLS STAC records directly from parquet files in S3, reads the HLS COG assets, masks cloud and cloud-shadow pixels, and computes a median composite across time. It writes Cloud Optimized GeoTIFFs with STAC metadata for the requested bounding box and date range.
+The algorithm queries HLS STAC records directly from parquet files in S3, reads the HLS COG assets, masks cloud and cloud-shadow pixels, and computes an integer lower-median composite across time. For an even number of valid observations, it selects the lower middle value. It writes Cloud Optimized GeoTIFFs with STAC metadata for the requested bounding box and date range.
 
 The HLS STAC geoparquet archive is experimental and can lag CMR by a few days. See the [archive repository](https://github.com/MAAP-Project/hls-stac-geoparquet-archive) for details.
 

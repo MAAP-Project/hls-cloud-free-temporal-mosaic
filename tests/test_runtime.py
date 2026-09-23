@@ -170,12 +170,16 @@ def synthetic_stacks():
 
 def test_create_composite_masks_clouds_and_nodata():
     spectral, fmask, _ = synthetic_stacks()
+    spectral = spectral.chunk({"time": -1})
+    fmask = fmask.chunk({"time": -1})
 
     composite = create_composite(spectral, fmask)
 
+    assert hasattr(composite.data, "compute")
+    assert composite.dtype == np.int16
     np.testing.assert_array_equal(
-        composite.sel(band="red").values,
-        np.array([[1, NODATA], [5, 5]]),
+        composite.compute().sel(band="red").values,
+        np.array([[1, NODATA], [5, 4]], dtype=np.int16),
     )
 
 
@@ -197,7 +201,7 @@ def test_export_writes_georeferenced_cog_and_self_contained_stac(tmp_path):
     with rasterio.open(tmp_path / "red.tif") as dataset:
         assert dataset.crs == CRS.from_epsg(32615)
         assert dataset.transform == transform
-        np.testing.assert_array_equal(dataset.read(1), [[1, NODATA], [5, 5]])
+        np.testing.assert_array_equal(dataset.read(1), [[1, NODATA], [5, 4]])
 
     catalog = json.loads((tmp_path / "catalog.json").read_text())
     collection_links = [link for link in catalog["links"] if link["rel"] == "child"]
@@ -213,7 +217,7 @@ def test_export_writes_georeferenced_cog_and_self_contained_stac(tmp_path):
     assert collection["extent"]["temporal"]["interval"] == [[None, None]]
     assert collection["item_assets"] == {
         "red": {
-            "description": "median red band value from cloud-free pixels in the temporal mosaic",
+            "description": "lower-median red band value from cloud-free pixels in the temporal mosaic",
             "roles": ["data"],
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
         }
@@ -235,7 +239,9 @@ def test_export_writes_georeferenced_cog_and_self_contained_stac(tmp_path):
     assert len(item_links) == 1
     item = json.loads((collection_path.parent / item_links[0]["href"]).read_text())
     assert item["collection"] == collection["id"]
+    assert set(item["assets"]) == {"red"}
     assert item["assets"]["red"]["href"] == "../../red.tif"
+    assert item["assets"]["red"]["raster:bands"] == [{"data_type": "int16"}]
     assert item["properties"]["proj:epsg"] == 32615
     assert item["properties"]["proj:shape"] == [2, 2]
     assert item["properties"]["proj:transform"] == list(transform)
