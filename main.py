@@ -58,6 +58,9 @@ INT16_SENTINEL = -32768
 FMASK_NODATA = 255
 HLS_BITMASK = 14
 COMPOSITE_METHOD = "lower-median-v1"
+# x-release-please-start-version
+ALGORITHM_VERSION = "0.4.1"
+# x-release-please-end-version
 MGRS_EXTENSION_URL = "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json"
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
 LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
@@ -626,24 +629,15 @@ def export_outputs(
 ) -> None:
     """Write native-grid COGs and a deterministic self-contained STAC item."""
     assets: dict[str, Asset] = {}
-    writes = []
+    arrays = []
     for band in bands:
         href = f"{band}.tif"
         logger.info("exporting %s", href)
         da = composite.sel(band=band, drop=True)
-        da_to_export = (
+        arrays.append(
             da.rio.write_crs(grid.crs, inplace=False)
             .rio.write_transform(grid.transform, inplace=False)
             .rio.write_nodata(NODATA, encoded=True, inplace=False)
-        )
-        writes.append(
-            da_to_export.rio.to_raster(
-                output_dir / href,
-                driver="COG",
-                dtype=DTYPE,
-                compress="DEFLATE",
-                compute=False,
-            )
         )
         assets[band] = Asset(
             href=href,
@@ -651,14 +645,26 @@ def export_outputs(
             media_type=MediaType.COG,
             roles=["data"],
         )
-    dask.compute(*writes, scheduler="threads", num_workers=dask_workers)
+
+    # The COG driver creates its layout during the initial write and does not
+    # support the window updates used by rioxarray's deferred Dask writer.
+    computed_arrays = dask.compute(
+        *arrays, scheduler="threads", num_workers=dask_workers
+    )
+    for band, da_to_export in zip(bands, computed_arrays, strict=True):
+        da_to_export.rio.to_raster(
+            output_dir / f"{band}.tif",
+            driver="COG",
+            dtype=DTYPE,
+            compress="DEFLATE",
+        )
 
     catalog = Catalog(
         id="DPS", description="DPS", catalog_type=CatalogType.SELF_CONTAINED
     )
     collection = Collection(
         id="hls-cloud-free-temporal-mosaic",
-        title="HLS Cloud-Free Temporal Mosaic",
+        title=f"HLS Cloud-Free Temporal Mosaic v{ALGORITHM_VERSION}",
         description=(
             "Cloud-free temporal mosaics of HLS surface reflectance. "
             "The algorithm masks cloud and cloud-shadow pixels using HLS Fmask "

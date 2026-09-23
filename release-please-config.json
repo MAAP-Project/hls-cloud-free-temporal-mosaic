@@ -13,6 +13,10 @@
         },
         {
           "type": "generic",
+          "path": "main.py"
+        },
+        {
+          "type": "generic",
           "path": "README.md"
         },
         {

@@ -45,7 +45,7 @@ uv run --frozen main.py \
 
 Use `--direct_bucket_access` for the deployed MAAP path. Without it, local runs use authenticated HTTPS and require `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD`.
 
-At export time, the runtime estimates the peak working set for one 1024 × 1024 spatial chunk across the selected observations, then uses up to 75% of currently available cgroup memory and the CPUs available to the container to select Dask thread workers. The chosen worker count and estimate are logged. A 16 GB worker should therefore use its requested CPUs; move to 32 GB only when that log limits workers by memory or jobs exhaust memory.
+At export time, the runtime estimates the peak working set for one 1024 × 1024 spatial chunk across the selected observations, then uses up to 75% of currently available cgroup memory and the CPUs available to the container to select Dask thread workers. All selected bands are computed together at this boundary so shared source and Fmask work is reused; the resulting arrays are then written as COGs. The chosen worker count and estimate are logged. A 16 GB worker should therefore use its requested CPUs; move to 32 GB only when that log limits workers by memory or jobs exhaust memory.
 
 ```yaml
 # local-job.yml
@@ -182,4 +182,8 @@ output/
 └── swir_2.tif
 ```
 
-The hierarchy is `Catalog -> Collection -> Item`. The COGs retain the exact native source transform, CRS, shape, and footprint. The output STAC item records precise temporal bounds, resulting native projection metadata, tile identity, composite definition, and discovered source item IDs.
+The hierarchy is `Catalog -> Collection -> Item`. The collection title includes the software algorithm version:
+<!-- x-release-please-start-version -->
+`HLS Cloud-Free Temporal Mosaic v0.4.1`
+<!-- x-release-please-end-version -->
+The COGs retain the exact native source transform, CRS, shape, and footprint. The output STAC item records precise temporal bounds, resulting native projection metadata, tile identity, composite definition, and discovered source item IDs.
