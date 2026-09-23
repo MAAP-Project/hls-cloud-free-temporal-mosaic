@@ -1,14 +1,15 @@
-"""Create a cloud-free composite image from a temporal mosaic of HLS granules."""
+"""Create a cloud-free composite image from a native HLS tile."""
 
 import argparse
 import base64
 import json
 import logging
-import math
 import os
-from datetime import datetime, timezone
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -30,6 +31,7 @@ from pystac import (
     Link,
     MediaType,
     Provider,
+    ProviderRole,
     SpatialExtent,
     TemporalExtent,
 )
@@ -49,18 +51,20 @@ if TYPE_CHECKING:
 BBox = tuple[float, float, float, float]
 
 DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
-DEFAULT_RESOLUTION = 30
 DTYPE = "int16"
 FMASK_DTYPE = "uint8"
 NODATA = -9999
 INT16_SENTINEL = -32768
 FMASK_NODATA = 255
 HLS_BITMASK = 14
+COMPOSITE_ID = "median-v1"
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
 LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
 EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
-HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/**/*.parquet"
-CHUNKS = {"time": -1, "band": 1, "x": 2048, "y": 2048}
+HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/year={year}/month={month}/{collection}-{year}-{month}.parquet"
+CHUNKS = {"time": -1, "band": 1, "x": -1, "y": -1}
+HLS_TILE_RE = re.compile(r"^T\d{2}[A-Z]{3}$")
+HLS_ITEM_RE = re.compile(r"^HLS\.[LS]30\.(T\d{2}[A-Z]{3})\.")
 
 COLLECTION_BAND_ALIASES = {
     "HLSL30_2.0": {
@@ -93,12 +97,66 @@ COLLECTION_BAND_ALIASES = {
 }
 
 
+@dataclass(frozen=True)
+class NativeGrid:
+    """The source CRS, transform, shape, and exact native footprint."""
+
+    crs: CRS
+    transform: Affine
+    shape: tuple[int, int]
+    bbox: BBox
+    resolution: float
+
+
 def parse_datetime_utc(dt_string: str) -> datetime:
-    """Parse an ISO datetime string and ensure it is timezone-aware UTC."""
+    """Parse an ISO datetime string and normalize it to UTC."""
     dt = datetime.fromisoformat(dt_string.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt.astimezone(timezone.utc)
+
+
+def normalize_tile_id(tile_id: str) -> str:
+    """Validate and normalize an HLS MGRS tile identifier."""
+    tile_id = tile_id.upper()
+    if not HLS_TILE_RE.fullmatch(tile_id):
+        raise ValueError("tile_id must look like T15TYJ")
+    return tile_id
+
+
+def normalize_interval(
+    start_datetime: datetime, end_datetime: datetime
+) -> tuple[datetime, datetime, datetime]:
+    """Normalize a whole-calendar-day interval to inclusive and exclusive bounds.
+
+    The start must be UTC midnight. The end is either the next exclusive UTC
+    midnight or 23:59:59 on the last included day. The returned values are the
+    UTC start, exclusive query end, and precise last included second.
+    """
+    start = start_datetime.astimezone(timezone.utc)
+    end = end_datetime.astimezone(timezone.utc)
+    if start.time() != datetime.min.time():
+        raise ValueError("start_datetime must be at UTC midnight")
+    if end <= start:
+        raise ValueError("end_datetime must be after start_datetime")
+    if end.time() == datetime.min.time():
+        end_exclusive = end
+    elif end.time() == datetime.strptime("23:59:59", "%H:%M:%S").time():
+        end_exclusive = end.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + timedelta(days=1)
+    else:
+        raise ValueError(
+            "end_datetime must be an exclusive UTC midnight or 23:59:59 on the last day"
+        )
+    if end_exclusive <= start:
+        raise ValueError("end_datetime must include at least one calendar day")
+    return start, end_exclusive, end_exclusive - timedelta(seconds=1)
+
+
+def format_datetime(dt: datetime) -> str:
+    """Format a UTC datetime as RFC 3339 without a redundant offset."""
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class MaapEarthdataCredentialProvider:
@@ -124,44 +182,22 @@ class MaapEarthdataCredentialProvider:
         }
 
 
-def validate_crs_units_in_meters(crs: CRS) -> None:
-    """Validate that the CRS uses meters as its linear unit."""
-    axis_info = crs.axis_info
-    if not axis_info:
-        raise ValueError(
-            f"Cannot determine units for CRS '{crs}'. Please provide a CRS with meter units."
-        )
-
-    for axis in axis_info:
-        unit_name = axis.unit_name.lower()
-        if unit_name not in ["metre", "meter", "m"]:
-            raise ValueError(
-                f"CRS '{crs}' uses '{axis.unit_name}' units, but only CRS with meter units are supported. "
-                "Please provide a CRS that uses meters (e.g., UTM zones, Web Mercator)."
-            )
-
-
 def get_earthdata_token() -> str:
     """Fetch an Earthdata bearer token from EARTHDATA_USERNAME/PASSWORD."""
     username = os.getenv("EARTHDATA_USERNAME")
     password = os.getenv("EARTHDATA_PASSWORD")
-
     if not username or not password:
         raise RuntimeError(
             "HTTP access requires EARTHDATA_USERNAME and EARTHDATA_PASSWORD environment variables."
         )
-
-    credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode(
-        "ascii"
-    )
+    credentials = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
     request = Request(
         EARTHDATA_TOKEN_URL,
         method="POST",
         headers={"Authorization": f"Basic {credentials}"},
     )
     with urlopen(request, timeout=10) as response:  # noqa: S310
-        payload = json.loads(response.read().decode("utf-8"))
-
+        payload = json.loads(response.read().decode())
     token = payload.get("access_token")
     if not token:
         raise RuntimeError("Earthdata token response did not contain access_token.")
@@ -169,7 +205,7 @@ def get_earthdata_token() -> str:
 
 
 def build_duckdb_client() -> DuckdbClient:
-    """Create a DuckDB client configured for the hive-partitioned HLS parquet archive."""
+    """Create a DuckDB client configured for the HLS parquet archive."""
     client = DuckdbClient(use_hive_partitioning=True)
     client.execute(
         """
@@ -184,24 +220,20 @@ def build_duckdb_client() -> DuckdbClient:
 
 def build_http_store() -> HTTPStore:
     """Create the authenticated HTTP store for LP DAAC HLS assets."""
-    token = get_earthdata_token()
     return HTTPStore(
         URL_PREFIX,
         client_options={
-            "default_headers": {
-                "Authorization": f"Bearer {token}",
-            },
+            "default_headers": {"Authorization": f"Bearer {get_earthdata_token()}"}
         },
     )
 
 
 def build_s3_store() -> S3Store:
     """Create the authenticated direct-S3 store for LP DAAC HLS assets."""
-    credential_provider = MaapEarthdataCredentialProvider()
     return S3Store(
         bucket="lp-prod-protected",
         region="us-west-2",
-        credential_provider=credential_provider,
+        credential_provider=MaapEarthdataCredentialProvider(),
     )
 
 
@@ -214,17 +246,13 @@ def build_store_config(direct_bucket_access: bool) -> dict[str, Any]:
     """Build lazycogs store kwargs for the requested access mode."""
     if direct_bucket_access:
         logger.info("using direct S3 bucket access for HLS assets")
-        return {
-            "store": build_s3_store(),
-            "path_from_href": path_from_lpdaac_href,
-        }
-
+        return {"store": build_s3_store(), "path_from_href": path_from_lpdaac_href}
     logger.info("using authenticated HTTPS access for HLS assets")
     return {"store": build_http_store()}
 
 
 def get_collection_band_names(collection: str, bands: list[str]) -> list[str]:
-    """Resolve requested shared band aliases to collection-specific HLS asset names."""
+    """Resolve shared band aliases to collection-specific HLS asset names."""
     aliases = COLLECTION_BAND_ALIASES[collection]
     missing = [band for band in bands if band not in aliases]
     if missing:
@@ -235,129 +263,298 @@ def get_collection_band_names(collection: str, bands: list[str]) -> list[str]:
 
 
 def datetime_range(start_datetime: datetime, end_datetime: datetime) -> str:
-    """Format the query datetime range for rustac/lazycogs."""
-    return f"{start_datetime.isoformat()}/{end_datetime.isoformat()}"
+    """Format an inclusive query datetime range for rustac/lazycogs."""
+    return f"{format_datetime(start_datetime)}/{format_datetime(end_datetime)}"
+
+
+def hls_geoparquet_hrefs(
+    collection: str, start_datetime: datetime, end_datetime: datetime
+) -> list[str]:
+    """Build exact monthly HREFs intersecting ``[start_datetime, end_datetime)``."""
+    month = start_datetime.astimezone(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    end = end_datetime.astimezone(timezone.utc)
+    hrefs = []
+    while month < end:
+        hrefs.append(
+            HLS_STAC_GEOPARQUET_HREF.format(
+                collection=collection, year=month.year, month=month.month
+            )
+        )
+        month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return hrefs
+
+
+def hls_item_tile_id(item_id: str) -> str | None:
+    """Extract the documented MGRS tile component from an HLS item ID."""
+    match = HLS_ITEM_RE.match(item_id)
+    return match.group(1) if match else None
+
+
+def item_tile_id(item: dict[str, Any]) -> str | None:
+    """Read a tile property when available, otherwise use the HLS ID component."""
+    properties = item.get("properties", {})
+    for key in ("tile_id", "mgrs:tile", "hls:tile_id"):
+        value = properties.get(key)
+        if value:
+            return str(value).upper()
+    return hls_item_tile_id(item.get("id", ""))
+
+
+def discover_hls_items(
+    collection: str,
+    *,
+    tile_id: str,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    duckdb_client: DuckdbClient,
+) -> list[dict[str, Any]]:
+    """Find exact-tile HLS items in ``[start_datetime, end_datetime)``."""
+    tile_id = normalize_tile_id(tile_id)
+    logger.info(
+        f"querying stac-geoparquet archive for {collection} {tile_id} {start_datetime} {end_datetime}"
+    )
+    items = []
+    for href in hls_geoparquet_hrefs(collection, start_datetime, end_datetime):
+        items.extend(
+            duckdb_client.search(
+                href,
+                datetime=datetime_range(
+                    start_datetime, end_datetime - timedelta(microseconds=1)
+                ),
+                filter={
+                    "op": "like",
+                    "args": [{"property": "id"}, f"%{tile_id}.%"],
+                },
+            )
+        )
+    exact = {item["id"]: item for item in items if item_tile_id(item) == tile_id}
+    return sorted(
+        exact.values(),
+        key=lambda item: (item.get("properties", {}).get("datetime", ""), item["id"]),
+    )
+
+
+def _same_grid(left: NativeGrid, right: NativeGrid) -> bool:
+    return (
+        left.crs.equals(right.crs)
+        and left.shape == right.shape
+        and np.allclose(
+            tuple(left.transform), tuple(right.transform), rtol=0, atol=1e-6
+        )
+    )
+
+
+def validate_native_grids(grids: list[NativeGrid], *, context: str) -> NativeGrid:
+    """Reject source grids that cannot be read without resampling."""
+    if not grids:
+        raise ValueError(f"No native grid was available for {context}.")
+    expected = grids[0]
+    for grid in grids[1:]:
+        if not _same_grid(expected, grid):
+            raise ValueError(
+                f"HLS {context} contains incompatible source grids; refusing to resample."
+            )
+    return expected
+
+
+def _asset_href_path(href: str, store_kwargs: dict[str, Any]) -> str:
+    path_fn = store_kwargs.get("path_from_href")
+    if path_fn is not None:
+        return path_fn(href)
+    return urlparse(href).path.lstrip("/")
+
+
+def _inspect_cog_grids(
+    item: dict[str, Any], assets: list[str], store_kwargs: dict[str, Any]
+) -> list[NativeGrid]:
+    """Inspect COG headers for the native grid and QA alignment."""
+    from async_geotiff import GeoTIFF
+
+    async def inspect() -> list[NativeGrid]:
+        grids = []
+        for asset_name in assets:
+            href = item.get("assets", {}).get(asset_name, {}).get("href")
+            if not href:
+                raise ValueError(f"HLS item {item.get('id')} has no {asset_name} asset")
+            geotiff = await GeoTIFF.open(
+                _asset_href_path(href, store_kwargs), store=store_kwargs["store"]
+            )
+            transform = Affine(*tuple(geotiff.transform)[:6])
+            shape = (geotiff.height, geotiff.width)
+            corners = [
+                transform * point
+                for point in ((0, 0), (shape[1], 0), (0, shape[0]), shape[::-1])
+            ]
+            if (
+                transform.b
+                or transform.d
+                or not np.isclose(abs(transform.a), abs(transform.e))
+            ):
+                raise ValueError(
+                    f"HLS item {item.get('id')} asset {asset_name} is not an unrotated square native grid"
+                )
+            grids.append(
+                NativeGrid(
+                    CRS.from_user_input(geotiff.crs),
+                    transform,
+                    shape,
+                    (
+                        min(x for x, _ in corners),
+                        min(y for _, y in corners),
+                        max(x for x, _ in corners),
+                        max(y for _, y in corners),
+                    ),
+                    abs(transform.a),
+                )
+            )
+        return grids
+
+    return lazycogs.run_on_loop(inspect())
+
+
+def native_grid_for_items(
+    items: list[dict[str, Any]],
+    *,
+    bands: list[str],
+    store_kwargs: dict[str, Any],
+) -> NativeGrid:
+    """Derive and validate one native grid from every discovered item's COGs."""
+    grids = []
+    for item in items:
+        spectral_asset = COLLECTION_BAND_ALIASES[item["collection"]][bands[0]]
+        grids.extend(_inspect_cog_grids(item, [spectral_asset, "Fmask"], store_kwargs))
+    return validate_native_grids(grids, context="COG headers")
 
 
 def open_hls_collection(
     collection: str,
     *,
-    duckdb_client: DuckdbClient,
-    bbox: BBox,
-    crs: CRS,
+    items: list[dict[str, Any]],
+    grid: NativeGrid,
     start_datetime: datetime,
     end_datetime: datetime,
     bands: list[str],
-    resolution: int | float,
     store_kwargs: dict[str, Any],
-) -> tuple[xr.DataArray, xr.DataArray] | None:
-    """Open one HLS collection's spectral bands and Fmask as lazy arrays."""
-    href = HLS_STAC_GEOPARQUET_HREF.format(collection=collection)
+    duckdb_client: DuckdbClient,
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Open exact discovered source IDs at their native HLS grid."""
     collection_band_names = get_collection_band_names(collection, bands)
-    search_args = {
-        "href": href,
-        "datetime": datetime_range(start_datetime, end_datetime),
-        "duckdb_client": duckdb_client,
-    }
+    items_by_month: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for item in items:
+        dt = parse_datetime_utc(item["properties"]["datetime"])
+        items_by_month.setdefault((dt.year, dt.month), []).append(item)
 
-    try:
-        spectral = lazycogs.open(
-            crs=crs,
-            bbox=bbox,
-            resolution=resolution,
-            time_period="P1D",
-            bands=collection_band_names,
-            chunks=CHUNKS,
-            dtype=DTYPE,
-            nodata=NODATA,
+    spectral_arrays = []
+    fmask_arrays = []
+    month = start_datetime.astimezone(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    for href in hls_geoparquet_hrefs(collection, start_datetime, end_datetime):
+        month_items = items_by_month.get((month.year, month.month))
+        if not month_items:
+            month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+            continue
+        common = {
+            "href": href,
+            "datetime": datetime_range(
+                start_datetime, end_datetime - timedelta(microseconds=1)
+            ),
+            "ids": [item["id"] for item in month_items],
+            "bbox": grid.bbox,
+            "crs": grid.crs,
+            "resolution": grid.resolution,
+            "time_period": "P1D",
+            "sortby": ["datetime", "id"],
+            "chunks": CHUNKS,
+            "duckdb_client": duckdb_client,
             **store_kwargs,
-            **search_args,
+        }
+        spectral_arrays.append(
+            lazycogs.open(
+                bands=collection_band_names,
+                dtype=DTYPE,
+                nodata=NODATA,
+                **common,
+            ).assign_coords(band=bands)
         )
-        fmask = lazycogs.open(
-            crs=crs,
-            bbox=bbox,
-            resolution=resolution,
-            time_period="P1D",
-            bands=["Fmask"],
-            chunks=CHUNKS,
-            dtype=FMASK_DTYPE,
-            nodata=FMASK_NODATA,
-            **store_kwargs,
-            **search_args,
-        ).squeeze("band", drop=True)
-    except ValueError as exc:
-        if "No STAC items matched the query" in str(exc):
-            logger.info("no matching items found for %s", collection)
-            return None
-        raise
+        fmask_arrays.append(
+            lazycogs.open(
+                bands=["Fmask"],
+                dtype=FMASK_DTYPE,
+                nodata=FMASK_NODATA,
+                **common,
+            ).squeeze("band", drop=True)
+        )
+        month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
 
-    spectral = spectral.assign_coords(band=bands)
-    return spectral, fmask
+    return (
+        xr.concat(spectral_arrays, dim="time").sortby("time"),
+        xr.concat(fmask_arrays, dim="time").sortby("time"),
+    )
 
 
 def open_hls_stacks(
     *,
-    bbox: BBox,
-    crs: CRS,
+    tile_id: str,
     start_datetime: datetime,
     end_datetime: datetime,
     bands: list[str],
-    resolution: int | float,
     direct_bucket_access: bool,
-) -> tuple[xr.DataArray, xr.DataArray]:
-    """Open combined HLS spectral and Fmask stacks across both collections."""
+) -> tuple[xr.DataArray, xr.DataArray, NativeGrid, list[str]]:
+    """Discover both HLS collections and open their exact native-grid stacks."""
     duckdb_client = build_duckdb_client()
-    store_kwargs = build_store_config(direct_bucket_access)
-
-    spectral_arrays: list[xr.DataArray] = []
-    fmask_arrays: list[xr.DataArray] = []
-
-    for collection in COLLECTION_BAND_ALIASES:
-        opened = open_hls_collection(
+    items_by_collection = {
+        collection: discover_hls_items(
             collection,
+            tile_id=tile_id,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
             duckdb_client=duckdb_client,
-            bbox=bbox,
-            crs=crs,
+        )
+        for collection in COLLECTION_BAND_ALIASES
+    }
+    all_items = [item for items in items_by_collection.values() for item in items]
+    if not all_items:
+        raise ValueError(
+            f"No HLS items matched tile {tile_id} across HLSL30_2.0 or HLSS30_2.0."
+        )
+    store_kwargs = build_store_config(direct_bucket_access)
+    grid = native_grid_for_items(all_items, bands=bands, store_kwargs=store_kwargs)
+
+    spectral_arrays = []
+    fmask_arrays = []
+    for collection, items in items_by_collection.items():
+        if not items:
+            logger.info("no matching items found for %s", collection)
+            continue
+        spectral, fmask = open_hls_collection(
+            collection,
+            items=items,
+            grid=grid,
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             bands=bands,
-            resolution=resolution,
             store_kwargs=store_kwargs,
+            duckdb_client=duckdb_client,
         )
-        if opened is None:
-            continue
-        spectral, fmask = opened
         spectral_arrays.append(spectral)
         fmask_arrays.append(fmask)
 
-    if not spectral_arrays or not fmask_arrays:
-        raise ValueError(
-            "No HLS items matched the query across HLSL30_2.0 or HLSS30_2.0."
-        )
-
     spectral_stack = xr.concat(spectral_arrays, dim="time").sortby("time")
     fmask_stack = xr.concat(fmask_arrays, dim="time").sortby("time")
-    logger.info(
-        "concatenated arrays: spectral dims=%s shape=%s sizes=%s; fmask dims=%s shape=%s sizes=%s",
-        spectral_stack.dims,
-        spectral_stack.shape,
-        dict(spectral_stack.sizes),
-        fmask_stack.dims,
-        fmask_stack.shape,
-        dict(fmask_stack.sizes),
-    )
-    # spectral_stack, fmask_stack = xr.align(spectral_stack, fmask_stack, join="exact")
-    #
-    return spectral_stack, fmask_stack
+    spectral_stack, fmask_stack = xr.align(spectral_stack, fmask_stack, join="exact")
+    return spectral_stack, fmask_stack, grid, [item["id"] for item in all_items]
 
 
 def create_composite(
     spectral_stack: xr.DataArray, fmask_stack: xr.DataArray
 ) -> xr.DataArray:
-    """Apply the HLS mask and lazily calculate an integer lower-median composite."""
+    """Apply HLS masking and calculate the integer lower-median composite."""
     valid_mask = ((fmask_stack & HLS_BITMASK) == 0) & (spectral_stack != NODATA)
     valid_count = valid_mask.sum(dim="time")
-    masked = xr.where(valid_mask, spectral_stack, INT16_SENTINEL)
+    masked = xr.where(valid_mask, spectral_stack, INT16_SENTINEL).chunk({"time": -1})
 
     def lower_median(values: Any, count: Any) -> Any:
         sorted_values = np.sort(values, axis=-1)
@@ -379,28 +576,32 @@ def create_composite(
     )
 
 
+def item_id(tile_id: str, start_datetime: datetime, end_datetime: datetime) -> str:
+    """Return the deterministic identity for one tile, interval, and method."""
+    return f"hls-{normalize_tile_id(tile_id)}-{start_datetime:%Y%m%d}-{end_datetime:%Y%m%d}-{COMPOSITE_ID}"
+
+
 def export_outputs(
     composite: xr.DataArray,
     *,
+    tile_id: str,
+    grid: NativeGrid,
     bands: list[str],
-    bbox: BBox,
     start_datetime: datetime,
     end_datetime: datetime,
     output_dir: Path,
-    crs: CRS,
+    source_item_ids: list[str],
 ) -> None:
-    """Write per-band COGs and the output STAC item."""
+    """Write native-grid COGs and a deterministic self-contained STAC item."""
     assets: dict[str, Asset] = {}
-    transform = Affine(*composite.attrs["spatial:transform"])
-
     writes = []
     for band in bands:
         href = f"{band}.tif"
         logger.info("exporting %s", href)
         da = composite.sel(band=band, drop=True)
         da_to_export = (
-            da.rio.write_crs(crs, inplace=False)
-            .rio.write_transform(transform, inplace=False)
+            da.rio.write_crs(grid.crs, inplace=False)
+            .rio.write_transform(grid.transform, inplace=False)
             .rio.write_nodata(NODATA, encoded=True, inplace=False)
         )
         writes.append(
@@ -418,13 +619,10 @@ def export_outputs(
             media_type=MediaType.COG,
             roles=["data"],
         )
-
     dask.compute(*writes, scheduler="threads", num_workers=1)
 
     catalog = Catalog(
-        id="DPS",
-        description="DPS",
-        catalog_type=CatalogType.SELF_CONTAINED,
+        id="DPS", description="DPS", catalog_type=CatalogType.SELF_CONTAINED
     )
     collection = Collection(
         id="hls-cloud-free-temporal-mosaic",
@@ -432,19 +630,18 @@ def export_outputs(
         description=(
             "Cloud-free temporal mosaics of HLS surface reflectance. "
             "The algorithm masks cloud and cloud-shadow pixels using HLS Fmask "
-            "quality flags, then computes a per-pixel integer lower-median "
-            "reflectance composite."
+            "quality flags, then computes a per-pixel integer lower-median composite."
         ),
         extent=Extent(
             spatial=SpatialExtent([[-180.0, -90.0, 180.0, 90.0]]),
-            temporal=TemporalExtent([[None, None]]),
+            temporal=TemporalExtent(cast(list[list[datetime | None]], [[None, None]])),
         ),
         license="other",
         keywords=["HLS", "cloud-free", "temporal mosaic", "Fmask"],
         providers=[
             Provider(
                 name="MAAP Project",
-                roles=["processor"],
+                roles=[ProviderRole.PROCESSOR],
                 url="https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic",
             )
         ],
@@ -484,22 +681,23 @@ def export_outputs(
     source_file = str(output_dir / assets[bands[0]].href)
     item = create_stac_item(
         source=source_file,
-        input_datetime=end_datetime,
-        id="-".join(
-            [
-                "_".join(str(int(x)) for x in bbox),
-                start_datetime.strftime("%Y%m%d"),
-                end_datetime.strftime("%Y%m%d"),
-            ]
-        ),
+        input_datetime=None,
+        id=item_id(tile_id, start_datetime, end_datetime),
         with_proj=True,
         properties={
-            "datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "start_datetime": start_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end_datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "datetime": None,
+            "start_datetime": format_datetime(start_datetime),
+            "end_datetime": format_datetime(end_datetime),
+            "hls:tile_id": normalize_tile_id(tile_id),
+            "hls:bands": bands,
+            "hls:composite": COMPOSITE_ID,
+            "hls:reducer": "lower-median",
+            "hls:mask": "Fmask bitmask 14 equals zero and spectral nodata is excluded",
+            "hls:time_grouping": "P1D",
+            "hls:daily_sampling": "first-valid per collection after datetime,id ordering",
+            "hls:source_item_ids": source_item_ids,
         },
     )
-
     item.assets = {}
     for band, asset in assets.items():
         item.add_asset(band, asset)
@@ -510,100 +708,74 @@ def export_outputs(
     collection.add_item(item)
     item.make_asset_hrefs_relative()
     catalog.normalize_and_save(
-        root_href=str(output_dir),
-        catalog_type=CatalogType.SELF_CONTAINED,
+        root_href=str(output_dir), catalog_type=CatalogType.SELF_CONTAINED
     )
 
 
 def run(
     start_datetime: datetime,
     end_datetime: datetime,
-    bbox: BBox,
-    crs: CRS,
+    tile_id: str,
     output_dir: Path,
     bands: list[str] = DEFAULT_BANDS,
-    resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
 ) -> None:
-    """Generate the cloud-free temporal mosaic and write outputs."""
+    """Generate one native HLS tile composite and write its outputs."""
+    start, query_end, included_end = normalize_interval(start_datetime, end_datetime)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    spectral_stack, fmask_stack = open_hls_stacks(
-        bbox=bbox,
-        crs=crs,
-        start_datetime=start_datetime,
-        end_datetime=end_datetime,
+    spectral_stack, fmask_stack, grid, source_item_ids = open_hls_stacks(
+        tile_id=tile_id,
+        start_datetime=start,
+        end_datetime=query_end,
         bands=bands,
-        resolution=resolution,
         direct_bucket_access=direct_bucket_access,
     )
     composite = create_composite(spectral_stack, fmask_stack)
     export_outputs(
         composite,
+        tile_id=tile_id,
+        grid=grid,
         bands=bands,
-        bbox=bbox,
-        start_datetime=start_datetime,
-        end_datetime=end_datetime,
+        start_datetime=start,
+        end_datetime=included_end,
         output_dir=output_dir,
-        crs=crs,
+        source_item_ids=source_item_ids,
     )
 
 
-def parse_bbox(value: str) -> list[float]:
-    """Parse four finite, space-separated bounding-box coordinates."""
+def parse_tile_id(value: str) -> str:
+    """Parse one HLS MGRS tile ID for argparse."""
     try:
-        bbox = [float(coordinate) for coordinate in value.split()]
+        return normalize_tile_id(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            "bbox must contain exactly four finite numeric coordinates"
-        ) from exc
-
-    if len(bbox) != 4 or not all(math.isfinite(coordinate) for coordinate in bbox):
-        raise argparse.ArgumentTypeError(
-            "bbox must contain exactly four finite numeric coordinates"
-        )
-    return bbox
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line inputs without starting network or filesystem work."""
     parser = argparse.ArgumentParser(
-        description="Queries the HLS STAC geoparquet archive and writes the result to a file"
+        description="Query the HLS STAC geoparquet archive for one native tile and write the result"
     )
     parser.add_argument(
-        "--start_datetime",
-        help="start datetime in ISO format (e.g., 2024-01-01T00:00:00Z)",
-        required=True,
-        type=str,
+        "--start_datetime", help="UTC midnight start in ISO format", required=True
     )
     parser.add_argument(
         "--end_datetime",
-        help="end datetime in ISO format (e.g., 2024-12-31T23:59:59Z)",
+        help="exclusive UTC midnight, or 23:59:59 UTC on the last included day",
         required=True,
-        type=str,
     )
     parser.add_argument(
-        "--bbox",
-        help="space-separated bounding box (xmin, ymin, xmax, ymax)",
+        "--tile_id",
+        help="HLS MGRS tile ID, for example T15TYJ",
         required=True,
-        type=parse_bbox,
-        metavar="BBOX",
-    )
-    parser.add_argument(
-        "--crs",
-        help="CRS definition of the bounding box coordinates",
-        required=True,
-        type=str,
+        type=parse_tile_id,
     )
     parser.add_argument(
         "--output_dir", help="Directory in which to save output", required=True
     )
     parser.add_argument(
         "--direct_bucket_access",
-        help=(
-            "Use direct LP DAAC S3 bucket access instead of HTTPS URLs. "
-            "The OGC Application Package enables this by default."
-        ),
+        help="Use direct LP DAAC S3 bucket access instead of HTTPS URLs.",
         action="store_true",
         default=False,
     )
@@ -613,29 +785,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     """Run the cloud-free mosaic command for parsed command-line inputs."""
     args = parse_args(argv)
-    output_dir = Path(args.output_dir)
-    bbox = tuple(args.bbox)
-    crs = CRS.from_string(args.crs)
-    validate_crs_units_in_meters(crs)
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
-
     logger.info(
-        "running with start_datetime=%s end_datetime=%s bbox=%s crs=%s output_dir=%s direct_bucket_access=%s",
+        "running with start_datetime=%s end_datetime=%s tile_id=%s output_dir=%s direct_bucket_access=%s",
         start_datetime,
         end_datetime,
-        bbox,
-        crs,
-        output_dir,
+        args.tile_id,
+        args.output_dir,
         args.direct_bucket_access,
     )
-
     run(
         start_datetime=start_datetime,
         end_datetime=end_datetime,
-        bbox=bbox,
-        crs=crs,
-        output_dir=output_dir,
+        tile_id=args.tile_id,
+        output_dir=Path(args.output_dir),
         direct_bucket_access=args.direct_bucket_access,
     )
     logger.info("Successfully completed processing")
