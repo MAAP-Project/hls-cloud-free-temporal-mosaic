@@ -416,9 +416,10 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
     )
     item = json.loads(item_path.read_text())
     assert item["id"] == "hls-composite-T15TYJ-20240101-20240131-lower-median-v1"
-    assert "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json" in item[
-        "stac_extensions"
-    ]
+    assert (
+        "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json"
+        in item["stac_extensions"]
+    )
     assert item["properties"]["mgrs:utm_zone"] == 15
     assert item["properties"]["mgrs:latitude_band"] == "T"
     assert item["properties"]["mgrs:grid_square"] == "YJ"
