@@ -99,9 +99,9 @@ if len(process_ids) != 1:
 process_id = process_ids[0]
 
 client = build_duckdb_client()
-aoi_bbox = (-92.2, 40.0, -91.0, 41.0)
-overall_start = datetime(2024, 12, 1, tzinfo=UTC)
-overall_end = datetime(2025, 3, 1, tzinfo=UTC)
+aoi_bbox = (-93.8, 44.5, -82.5, 50.2)
+overall_start = datetime(2026, 5, 1, tzinfo=UTC)
+overall_end = datetime(2026, 9, 1, tzinfo=UTC)
 tile_ids = set()
 
 for collection in ("HLSL30_2.0", "HLSS30_2.0"):
@@ -117,27 +117,37 @@ for collection in ("HLSL30_2.0", "HLSS30_2.0"):
             if (tile_id := item_tile_id(item))
         )
 
-job_ids = []
-month_start = overall_start
-while month_start < overall_end:
-    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
-    for tile_id in sorted(tile_ids):
-        response = maap.submit_job(
-            process_id=process_id,
-            inputs={
+def iter_job_inputs():
+    month_start = overall_start
+    while month_start < overall_end:
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        for tile_id in sorted(tile_ids):
+            yield {
                 "tile_id": tile_id,
                 "start_datetime": month_start.strftime("%Y-%m-%dT00:00:00Z"),
                 "end_datetime": next_month.strftime("%Y-%m-%dT00:00:00Z"),
                 "direct_bucket_access": True,
-            },
-            queue="maap-dps-worker-16gb",
-            tag="native-hls-tiles",
-        )
-        response.raise_for_status()
-        job_id = response.json()["jobID"]
-        job_ids.append(job_id)
-        logger.info("Submitted %s for %s %s", job_id, tile_id, month_start.date())
-    month_start = next_month
+            }
+        month_start = next_month
+
+
+job_ids = []
+for inputs in iter_job_inputs():
+    response = maap.submit_job(
+        process_id=process_id,
+        inputs=inputs,
+        queue="maap-dps-worker-16gb",
+        tag="native-hls-tiles",
+    )
+    response.raise_for_status()
+    job_id = response.json()["jobID"]
+    job_ids.append(job_id)
+    logger.info(
+        "Submitted %s for %s %s",
+        job_id,
+        inputs["tile_id"],
+        inputs["start_datetime"][:10],
+    )
 ```
 
 Submission does not mean completion. Save `job_ids` to check the jobs later; rerunning the submission loop can create duplicate jobs. To check their current status without resubmitting:
