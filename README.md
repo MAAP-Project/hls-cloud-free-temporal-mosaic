@@ -49,8 +49,8 @@ The standalone image is built and published by release automation. A local `uv s
 
 The parquet query uses DuckDB's AWS credential chain to access the MAAP-hosted archive.
 
-- **Deployed DPS / OGC jobs:** `direct_bucket_access` defaults to `true`, reading `s3://lp-prod-protected/...` through an authenticated `S3Store`. This path is intended for DPS workers in `us-west-2` and uses `NasaEarthdataCredentialProvider` for short-lived LP DAAC credentials.
-- **Local CWL runs:** override `direct_bucket_access` to `false` to read LP DAAC URLs through an authenticated `HTTPStore`.
+- **Deployed DPS / OGC jobs:** `direct_bucket_access` defaults to `true`, reading `s3://lp-prod-protected/...` through an authenticated `S3Store` in `us-west-2`. The store refreshes short-lived LP DAAC credentials through `MAAP().aws.earthdata_s3_credentials(...)`, so DPS must provide the MAAP authentication context, including `MAAP_PGT` where required.
+- **Local CWL runs:** override `direct_bucket_access` to `false` to read LP DAAC URLs through an authenticated `HTTPStore`. The local HTTPS path does not use the MAAP credential proxy and requires Earthdata username/password credentials.
 
 For example, with Docker available, create a local job file:
 
@@ -74,7 +74,7 @@ uvx --from cwltool cwltool \
   hls-cloud-free-temporal-mosaic.cwl local-job.yml
 ```
 
-Do not put Earthdata credentials, MAAP tokens, or other secrets in the CWL or job inputs.
+The direct-S3 DPS path is not a local replacement for Earthdata credentials: it assumes a MAAP-authenticated DPS runtime and the LP DAAC bucket's `us-west-2` region. Do not put Earthdata credentials, MAAP tokens, or other secrets in the CWL or job inputs.
 
 ## Submit an OGC job
 

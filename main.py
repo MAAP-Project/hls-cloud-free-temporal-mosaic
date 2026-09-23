@@ -8,7 +8,7 @@ import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -16,7 +16,6 @@ import lazycogs
 import rioxarray  # noqa: F401
 import xarray as xr
 from affine import Affine
-from obstore.auth.earthdata import NasaEarthdataCredentialProvider
 from obstore.store import HTTPStore, S3Store
 from pyproj import CRS
 from pystac import (
@@ -41,6 +40,9 @@ logging.basicConfig(
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from obstore.store import S3Credential
+
 BBox = tuple[float, float, float, float]
 
 DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
@@ -51,6 +53,7 @@ NODATA = -9999
 FMASK_NODATA = 255
 HLS_BITMASK = 14
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
+LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
 EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
 HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/**/*.parquet"
 CHUNKS = {"time": -1, "x": 2048, "y": 2048}
@@ -92,6 +95,29 @@ def parse_datetime_utc(dt_string: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+class MaapEarthdataCredentialProvider:
+    """Refresh LP DAAC S3 credentials through the authenticated MAAP API."""
+
+    def __init__(self, maap_client: Any | None = None) -> None:
+        if maap_client is None:
+            from maap.maap import MAAP  # type: ignore[import-untyped]
+
+            maap_client = MAAP()
+        self._maap_client = maap_client
+
+    def __call__(self) -> "S3Credential":
+        """Fetch and translate credentials into obstore's S3 schema."""
+        credentials = self._maap_client.aws.earthdata_s3_credentials(
+            LP_DAAC_CREDENTIALS_URL
+        )
+        return {
+            "access_key_id": credentials["accessKeyId"],
+            "secret_access_key": credentials["secretAccessKey"],
+            "token": credentials["sessionToken"],
+            "expires_at": parse_datetime_utc(credentials["expiration"]),
+        }
 
 
 def validate_crs_units_in_meters(crs: CRS) -> None:
@@ -167,11 +193,10 @@ def build_http_store() -> HTTPStore:
 
 def build_s3_store() -> S3Store:
     """Create the authenticated direct-S3 store for LP DAAC HLS assets."""
-    credential_provider = NasaEarthdataCredentialProvider(
-        credentials_url="https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials",
-    )
+    credential_provider = MaapEarthdataCredentialProvider()
     return S3Store(
         bucket="lp-prod-protected",
+        region="us-west-2",
         credential_provider=credential_provider,
     )
 
