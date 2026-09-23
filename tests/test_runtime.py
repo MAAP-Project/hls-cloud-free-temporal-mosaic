@@ -20,6 +20,7 @@ from main import (  # noqa: E402
     MaapEarthdataCredentialProvider,
     build_s3_store,
     create_composite,
+    dask_worker_count,
     discover_hls_items,
     hls_geoparquet_hrefs,
     item_tile_id,
@@ -382,6 +383,16 @@ def test_create_composite_masks_clouds_and_preserves_lower_median():
     )
 
 
+def test_dask_worker_count_respects_cpu_and_memory_limits(monkeypatch):
+    spectral, _, _ = synthetic_stacks()
+    spectral = spectral.chunk({"time": -1, "x": 2, "y": 2})
+    monkeypatch.setattr(main, "available_cpu_count", lambda: 8)
+    monkeypatch.setattr(main, "available_memory_bytes", lambda: 1_000)
+    monkeypatch.setattr(main, "estimated_composite_chunk_bytes", lambda _: 100)
+
+    assert dask_worker_count(spectral) == 7
+
+
 def test_export_writes_native_grid_and_stac_identity(tmp_path):
     spectral, fmask, transform = synthetic_stacks()
     composite = create_composite(spectral, fmask)
@@ -398,6 +409,7 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         end_datetime=datetime(2024, 1, 31, 23, 59, 59, tzinfo=UTC),
         output_dir=tmp_path,
         source_item_ids=["HLS.S30.T15TYJ.2024001T000000.v2.0"],
+        dask_workers=1,
     )
 
     with rasterio.open(tmp_path / "red.tif") as dataset:
