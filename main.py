@@ -336,29 +336,6 @@ def discover_hls_items(
     )
 
 
-def _same_grid(left: NativeGrid, right: NativeGrid) -> bool:
-    return (
-        left.crs.equals(right.crs)
-        and left.shape == right.shape
-        and np.allclose(
-            tuple(left.transform), tuple(right.transform), rtol=0, atol=1e-6
-        )
-    )
-
-
-def validate_native_grids(grids: list[NativeGrid], *, context: str) -> NativeGrid:
-    """Reject source grids that cannot be read without resampling."""
-    if not grids:
-        raise ValueError(f"No native grid was available for {context}.")
-    expected = grids[0]
-    for grid in grids[1:]:
-        if not _same_grid(expected, grid):
-            raise ValueError(
-                f"HLS {context} contains incompatible source grids; refusing to resample."
-            )
-    return expected
-
-
 def _asset_href_path(href: str, store_kwargs: dict[str, Any]) -> str:
     path_fn = store_kwargs.get("path_from_href")
     if path_fn is not None:
@@ -366,50 +343,46 @@ def _asset_href_path(href: str, store_kwargs: dict[str, Any]) -> str:
     return urlparse(href).path.lstrip("/")
 
 
-def _inspect_cog_grids(
-    item: dict[str, Any], assets: list[str], store_kwargs: dict[str, Any]
-) -> list[NativeGrid]:
-    """Inspect COG headers for the native grid and QA alignment."""
+def _inspect_cog_grid(
+    item: dict[str, Any], asset_name: str, store_kwargs: dict[str, Any]
+) -> NativeGrid:
+    """Read one representative COG header for the native grid."""
     from async_geotiff import GeoTIFF
 
-    async def inspect() -> list[NativeGrid]:
-        grids = []
-        for asset_name in assets:
-            href = item.get("assets", {}).get(asset_name, {}).get("href")
-            if not href:
-                raise ValueError(f"HLS item {item.get('id')} has no {asset_name} asset")
-            geotiff = await GeoTIFF.open(
-                _asset_href_path(href, store_kwargs), store=store_kwargs["store"]
+    href = item.get("assets", {}).get(asset_name, {}).get("href")
+    if not href:
+        raise ValueError(f"HLS item {item.get('id')} has no {asset_name} asset")
+
+    async def inspect() -> NativeGrid:
+        geotiff = await GeoTIFF.open(
+            _asset_href_path(href, store_kwargs), store=store_kwargs["store"]
+        )
+        transform = Affine(*tuple(geotiff.transform)[:6])
+        shape = (geotiff.height, geotiff.width)
+        corners = [
+            transform * point
+            for point in ((0, 0), (shape[1], 0), (0, shape[0]), shape[::-1])
+        ]
+        if (
+            transform.b
+            or transform.d
+            or not np.isclose(abs(transform.a), abs(transform.e))
+        ):
+            raise ValueError(
+                f"HLS item {item.get('id')} asset {asset_name} is not an unrotated square native grid"
             )
-            transform = Affine(*tuple(geotiff.transform)[:6])
-            shape = (geotiff.height, geotiff.width)
-            corners = [
-                transform * point
-                for point in ((0, 0), (shape[1], 0), (0, shape[0]), shape[::-1])
-            ]
-            if (
-                transform.b
-                or transform.d
-                or not np.isclose(abs(transform.a), abs(transform.e))
-            ):
-                raise ValueError(
-                    f"HLS item {item.get('id')} asset {asset_name} is not an unrotated square native grid"
-                )
-            grids.append(
-                NativeGrid(
-                    CRS.from_user_input(geotiff.crs),
-                    transform,
-                    shape,
-                    (
-                        min(x for x, _ in corners),
-                        min(y for _, y in corners),
-                        max(x for x, _ in corners),
-                        max(y for _, y in corners),
-                    ),
-                    abs(transform.a),
-                )
-            )
-        return grids
+        return NativeGrid(
+            CRS.from_user_input(geotiff.crs),
+            transform,
+            shape,
+            (
+                min(x for x, _ in corners),
+                min(y for _, y in corners),
+                max(x for x, _ in corners),
+                max(y for _, y in corners),
+            ),
+            abs(transform.a),
+        )
 
     return lazycogs.run_on_loop(inspect())
 
@@ -420,12 +393,12 @@ def native_grid_for_items(
     bands: list[str],
     store_kwargs: dict[str, Any],
 ) -> NativeGrid:
-    """Derive and validate one native grid from every discovered item's COGs."""
-    grids = []
-    for item in items:
-        spectral_asset = COLLECTION_BAND_ALIASES[item["collection"]][bands[0]]
-        grids.extend(_inspect_cog_grids(item, [spectral_asset, "Fmask"], store_kwargs))
-    return validate_native_grids(grids, context="COG headers")
+    """Read one representative COG header for the shared native grid."""
+    if not items:
+        raise ValueError("No native grid was available for COG headers.")
+    item = items[0]
+    spectral_asset = COLLECTION_BAND_ALIASES[item["collection"]][bands[0]]
+    return _inspect_cog_grid(item, spectral_asset, store_kwargs)
 
 
 def open_hls_collection(

@@ -29,7 +29,6 @@ from main import (  # noqa: E402
     normalize_interval,
     open_hls_collection,
     parse_args,
-    validate_native_grids,
 )
 
 UTC = timezone.utc
@@ -182,38 +181,26 @@ def _metadata_grid(epsg=32615, origin=(500000, 5100060), shape=(2, 2)):
     )
 
 
-def test_validate_native_grids_preserves_full_native_shape_and_rejects_mismatch():
-    grid = _metadata_grid(shape=(3660, 3660))
-    assert validate_native_grids([grid, grid], context="test") == grid
-    with pytest.raises(ValueError, match="incompatible source grids"):
-        validate_native_grids(
-            [grid, _metadata_grid(epsg=32616, shape=(3660, 3660))], context="test"
-        )
-    with pytest.raises(ValueError, match="incompatible source grids"):
-        validate_native_grids([grid, _metadata_grid(shape=(2, 2))], context="test")
-
-
-def test_native_grid_for_items_uses_cog_headers_not_stac_projection(monkeypatch):
+def test_native_grid_for_items_reads_one_representative_cog_header(monkeypatch):
     items = [_item("one"), _item("two", collection="HLSL30_2.0")]
     cog_grid = _metadata_grid(origin=(600000, 5200060), shape=(3660, 3660))
     calls = []
 
-    def inspect(item, assets, store_kwargs):
-        calls.append((item["id"], assets, store_kwargs))
-        return [cog_grid, cog_grid]
+    def inspect(item, asset_name, store_kwargs):
+        calls.append((item["id"], asset_name, store_kwargs))
+        return cog_grid
 
-    monkeypatch.setattr(main, "_inspect_cog_grids", inspect)
+    monkeypatch.setattr(main, "_inspect_cog_grid", inspect)
     store_kwargs = {"store": object()}
 
     assert (
         native_grid_for_items(items, bands=["red"], store_kwargs=store_kwargs)
         == cog_grid
     )
-    assert [(item_id, assets) for item_id, assets, _ in calls] == [
-        ("one", ["B04", "Fmask"]),
-        ("two", ["B04", "Fmask"]),
+    assert [(item_id, asset_name) for item_id, asset_name, _ in calls] == [
+        ("one", "B04")
     ]
-    assert all(kwargs is store_kwargs for _, _, kwargs in calls)
+    assert calls[0][2] is store_kwargs
 
 
 def _item(

@@ -20,7 +20,7 @@ hls-T15TYJ-20250501-20250531-median-v1
 
 The item also stores explicit `hls:tile_id`, `hls:composite`, reducer, masking, grouping, sampling, and source-item properties. `median-v1` means the current integer lower median, `P1D` grouping, first-valid daily source selection, and HLS Fmask masking. Any future reducer, grouping, output, or band-subset variant must get a distinct composite identity; this implementation does not provide a plugin registry.
 
-The output uses the full native HLS footprint, normally 3660 x 3660 pixels at 30 m, including the product's overlap. CRS, transform, shape, and resolution are inspected from the source COG headers, never from STAC projection metadata, an inferred MGRS hemisphere, or a reconstructed geographic STAC bbox. Each discovered item's inspected spectral sample and Fmask COG must agree on the native grid; mismatches fail instead of being resampled. Downstream reprojection and mosaicking across tiles remains the caller's responsibility.
+The output uses the full native HLS footprint, normally 3660 x 3660 pixels at 30 m, including the product's overlap. CRS, transform, shape, and resolution come from one representative source COG header, never from STAC projection metadata, an inferred MGRS hemisphere, or a reconstructed geographic STAC bbox. The remaining assets are assumed to share that native grid and are read by lazycogs. Downstream reprojection and mosaicking across tiles remains the caller's responsibility.
 
 ## MAAP deployment
 
