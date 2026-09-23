@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.4.0...v0.4.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* determine dask workers dynamically ([#20](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/20)) ([45936af](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/45936afe870b308dc3c17e13d6a790a3516d7dcf))
+
 ## [0.4.0](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.3...v0.4.0) (2026-09-23)
 
 
