@@ -64,6 +64,8 @@ LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credent
 EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
 HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/year={year}/month={month}/{collection}-{year}-{month}.parquet"
 CHUNKS = {"time": -1, "band": 1, "x": 1024, "y": 1024}
+CHUNK_WORKING_BYTES_PER_TIME_PIXEL = 12
+CHUNK_WORKING_OVERHEAD_BYTES = 64 * 1024 * 1024
 HLS_TILE_RE = re.compile(r"^T\d{2}[A-Z]{3}$")
 HLS_ITEM_RE = re.compile(r"^HLS\.[LS]30\.(T\d{2}[A-Z]{3})\.")
 
@@ -250,6 +252,61 @@ def build_store_config(direct_bucket_access: bool) -> dict[str, Any]:
         return {"store": build_s3_store(), "path_from_href": path_from_lpdaac_href}
     logger.info("using authenticated HTTPS access for HLS assets")
     return {"store": build_http_store()}
+
+
+def available_cpu_count() -> int:
+    """Return the CPU count available to this process."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if process_cpu_count is not None:
+        return max(1, process_cpu_count() or 1)
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
+    return max(1, os.cpu_count() or 1)
+
+
+def available_memory_bytes() -> int:
+    """Return memory currently available within the container cgroup or host."""
+    for limit_path, current_path in (
+        (Path("/sys/fs/cgroup/memory.max"), Path("/sys/fs/cgroup/memory.current")),
+        (
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+        ),
+    ):
+        if not limit_path.exists() or not current_path.exists():
+            continue
+        limit = limit_path.read_text().strip()
+        if limit.isdecimal() and int(limit) < 1 << 60:
+            return max(0, int(limit) - int(current_path.read_text().strip()))
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+
+
+def estimated_composite_chunk_bytes(spectral_stack: xr.DataArray) -> int:
+    """Estimate peak working memory for one lower-median spatial chunk."""
+    chunk_sizes = spectral_stack.chunksizes
+    pixels = max(chunk_sizes["x"]) * max(chunk_sizes["y"])
+    time_size = spectral_stack.sizes["time"]
+    return max(
+        CHUNK_WORKING_OVERHEAD_BYTES,
+        pixels * (time_size * CHUNK_WORKING_BYTES_PER_TIME_PIXEL + 2),
+    )
+
+
+def dask_worker_count(spectral_stack: xr.DataArray) -> int:
+    """Choose thread workers from available CPUs and a conservative chunk budget."""
+    chunk_bytes = estimated_composite_chunk_bytes(spectral_stack)
+    memory_bytes = available_memory_bytes()
+    memory_workers = max(1, (memory_bytes * 3 // 4) // chunk_bytes)
+    cpu_count = available_cpu_count()
+    workers = min(cpu_count, memory_workers)
+    logger.info(
+        "Dask runtime: workers=%s cpus=%s available_memory_mib=%s chunk_working_set_mib=%s",
+        workers,
+        cpu_count,
+        memory_bytes // 1024**2,
+        chunk_bytes // 1024**2,
+    )
+    return workers
 
 
 def get_collection_band_names(collection: str, bands: list[str]) -> list[str]:
@@ -565,6 +622,7 @@ def export_outputs(
     end_datetime: datetime,
     output_dir: Path,
     source_item_ids: list[str],
+    dask_workers: int,
 ) -> None:
     """Write native-grid COGs and a deterministic self-contained STAC item."""
     assets: dict[str, Asset] = {}
@@ -593,7 +651,7 @@ def export_outputs(
             media_type=MediaType.COG,
             roles=["data"],
         )
-    dask.compute(*writes, scheduler="threads", num_workers=1)
+    dask.compute(*writes, scheduler="threads", num_workers=dask_workers)
 
     catalog = Catalog(
         id="DPS", description="DPS", catalog_type=CatalogType.SELF_CONTAINED
@@ -705,6 +763,7 @@ def run(
         direct_bucket_access=direct_bucket_access,
     )
     composite = create_composite(spectral_stack, fmask_stack)
+    dask_workers = dask_worker_count(spectral_stack)
     export_outputs(
         composite,
         tile_id=tile_id,
@@ -714,6 +773,7 @@ def run(
         end_datetime=included_end,
         output_dir=output_dir,
         source_item_ids=source_item_ids,
+        dask_workers=dask_workers,
     )
 
 
