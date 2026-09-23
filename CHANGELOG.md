@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.3...v0.4.0) (2026-09-23)
+
+
+### Features
+
+* refactor to process by MGRS tile in native projection ([#19](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/19)) ([8cd5d80](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/8cd5d807c5ddbee56bc859cd1c2a8415efd7a1f8))
+
+
+### Bug Fixes
+
+* defer compute until last possible moment ([#16](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/16)) ([428d301](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/428d3013a2dfb6998744567ded115939f45477a1))
+* keep int16 dtype all the way through ([#18](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/18)) ([604b9e6](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/604b9e6828fa5b61c5dfde3041533c129abc04a9))
+
 ## [0.3.3](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.2...v0.3.3) (2026-09-23)
 
 
