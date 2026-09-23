@@ -1,12 +1,26 @@
 # HLS Cloud-Free Temporal Mosaic
 
-Create cloud-free composite images from temporal mosaics of HLS granules using the HLS STAC geoparquet archive and `lazycogs`.
+Create one cloud-free lower-median composite for one native HLS tile and one calendar-day interval. The workflow queries both `HLSL30_2.0` and `HLSS30_2.0` in the HLS STAC GeoParquet archive, masks HLS Fmask cloud and shadow bits, and writes native-grid COGs plus a self-contained STAC item.
 
-## About
+## Contract
 
-The algorithm queries HLS STAC records directly from parquet files in S3, reads the HLS COG assets, masks cloud and cloud-shadow pixels, and computes an integer lower-median composite across time. For an even number of valid observations, it selects the lower middle value. It writes Cloud Optimized GeoTIFFs with STAC metadata for the requested bounding box and date range.
+Inputs are:
 
-The HLS STAC geoparquet archive is experimental and can lag CMR by a few days. See the [archive repository](https://github.com/MAAP-Project/hls-stac-geoparquet-archive) for details.
+- `start_datetime`: UTC midnight, inclusive.
+- `end_datetime`: either the exclusive UTC midnight after the interval, or `23:59:59` UTC on its last included day.
+- `tile_id`: an HLS MGRS tile such as `T15TYJ`.
+
+For example, both `2025-05-01` to `2025-06-01` and `2025-05-01` to `2025-05-31T23:59:59Z` include May 1 through May 31. The search uses the normalized UTC interval; STAC metadata retains the precise normalized start and last included second. Partial-day intervals are rejected so the date-only product ID cannot collide for distinct sub-day jobs.
+
+The deterministic item ID is:
+
+```text
+hls-composite-T15TYJ-20250501-20250531-lower-median-v1
+```
+
+The item uses the STAC MGRS extension for tile identity and stores `hls-composite:method`, `hls-composite:mask`, and source-item lineage. `lower-median-v1` means the current integer lower median with P1D grouping, first-valid daily source selection, and HLS Fmask masking. Any future reducer, grouping, output, or band-subset variant must get a distinct method identity; this implementation does not provide a plugin registry.
+
+The output uses the full native HLS footprint, normally 3660 x 3660 pixels at 30 m, including the product's overlap. CRS, transform, shape, and resolution come from one representative source COG header, never from STAC projection metadata, an inferred MGRS hemisphere, or a reconstructed geographic STAC bbox. The remaining assets are assumed to share that native grid and are read by lazycogs. Downstream reprojection and mosaicking across tiles remains the caller's responsibility.
 
 ## MAAP deployment
 
@@ -16,54 +30,28 @@ The CWL is the sole MAAP registration interface:
 hls-cloud-free-temporal-mosaic.cwl
 ```
 
-Release automation registers that OGC Application Package and points it at the matching standalone, versioned image:
-
-```text
-ghcr.io/maap-project/hls-cloud-free-temporal-mosaic:v0.3.3
-```
-
-MAAP does not build the image or install this repository from a legacy descriptor. The CWL invokes `main.py` in the image directly.
+Release automation registers that OGC Application Package and points it at the matching standalone image. This input-contract refactor does not retag an image or change release metadata.
 
 ## Build, run, and test
 
-Install the locked development environment for local work:
-
 ```bash
 uv sync --frozen
-```
-
-For direct Python development, `main.py` defaults to HTTPS. Add `--direct_bucket_access` to exercise the deployed direct-S3 path:
-
-```bash
 uv run --frozen main.py \
   --start_datetime "2025-05-01T00:00:00Z" \
-  --end_datetime "2025-05-31T23:59:59Z" \
-  --bbox "500000 5000000 600000 5100000" \
-  --crs "EPSG:32615" \
+  --end_datetime "2025-06-01T00:00:00Z" \
+  --tile_id T15TYJ \
   --output_dir /tmp/hls-output
 ```
 
-The standalone image is built and published by release automation. A local `uv sync` is only for development; it is not a MAAP registration or image-release step.
-
-## Credentials and access modes
-
-The parquet query uses DuckDB's AWS credential chain to access the MAAP-hosted archive.
-
-- **Deployed DPS / OGC jobs:** `direct_bucket_access` defaults to `true`, reading `s3://lp-prod-protected/...` through an authenticated `S3Store` in `us-west-2`. The store refreshes short-lived LP DAAC credentials through `MAAP().aws.earthdata_s3_credentials(...)`, so DPS must provide the MAAP authentication context, including `MAAP_PGT` where required.
-- **Local CWL runs:** override `direct_bucket_access` to `false` to read LP DAAC URLs through an authenticated `HTTPStore`. The local HTTPS path does not use the MAAP credential proxy and requires Earthdata username/password credentials.
-
-For example, with Docker available, create a local job file:
+Use `--direct_bucket_access` for the deployed MAAP path. Without it, local runs use authenticated HTTPS and require `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD`.
 
 ```yaml
 # local-job.yml
 start_datetime: "2025-05-01T00:00:00Z"
-end_datetime: "2025-05-31T23:59:59Z"
-bbox: "500000 5000000 550000 5050000"
-crs: "EPSG:32615"
+end_datetime: "2025-06-01T00:00:00Z"
+tile_id: "T15TYJ"
 direct_bucket_access: false
 ```
-
-Then pass Earthdata credentials through the CWL runner:
 
 ```bash
 export EARTHDATA_USERNAME="your-earthdata-username"
@@ -74,103 +62,108 @@ uvx --from cwltool cwltool \
   hls-cloud-free-temporal-mosaic.cwl local-job.yml
 ```
 
-The direct-S3 DPS path is not a local replacement for Earthdata credentials: it assumes a MAAP-authenticated DPS runtime and the LP DAAC bucket's `us-west-2` region. Do not put Earthdata credentials, MAAP tokens, or other secrets in the CWL or job inputs.
+## Archive discovery and job enumeration
 
-## Submit an OGC job
+For an AOI, query the archive in both HLS collections across the overall interval, use a tile property when the archive provides one or otherwise extract the documented tile component from each HLS item ID, deduplicate and sort the IDs, then submit one job per tile and calendar month. This produces tiles with observations, not every theoretical MGRS tile. A tile/month job can still have no data and should be handled as a normal empty result.
 
-A deployed process selects its release, so job submission uses `submit_job(process_id, inputs, queue)` rather than the deprecated legacy API or an algorithm version argument:
+The archive is partitioned by year and month. The runtime enumerates exact monthly parquet HREFs from the requested interval instead of using a recursive wildcard. It supports STAC `bbox`, datetime, and CQL2 queries. A polygon AOI should use exact intersection when the query service supports it; otherwise use its geographic bbox as a candidate query and over-select tiles, then filter candidates with the polygon locally. Do not build a projected 8192-pixel grid or submit arbitrary bboxes.
+
+Run this example from the repository root in an authenticated MAAP ADE session with the project dependencies installed. Set `HLS_PROCESS_VERSION` in your environment to a deployed release that accepts `tile_id`. Version `0.3.3` uses the old bbox/CRS interface; wait for the native-tile release before submitting these jobs.
+
+**Note:** This example submits a real job for each discovered tile/month on `maap-dps-worker-16gb`. Check the AOI, dates, and queue before running it. Keep the interval aligned to calendar-month boundaries.
 
 ```python
+import logging
+import os
 from datetime import UTC, datetime, timedelta
 
 from maap.maap import MAAP
 
-maap = MAAP()
+from main import build_duckdb_client, hls_geoparquet_hrefs, item_tile_id
 
-# locate the process ID
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+maap = MAAP()
+process_version = os.environ["HLS_PROCESS_VERSION"]
 response = maap.list_algorithms()
 response.raise_for_status()
+process_ids = [
+    process["processID"]
+    for process in response.json()["processes"]
+    if process["title"] == "HLS Cloud-Free Temporal Mosaic"
+    and process["version"] == process_version
+]
+if len(process_ids) != 1:
+    raise ValueError(f"Expected one deployed process for version {process_version}, got {process_ids}")
+process_id = process_ids[0]
 
-process_id = next(
-   (
-       process["processID"]
-       for process in response.json()["processes"]
-       if process["title"] == "HLS Cloud-Free Temporal Mosaic"
-       and process["version"] == "0.3.3"
-   ),
-   None,
-)
-if process_id is None:
-   raise ValueError("algorithm not found")
+client = build_duckdb_client()
+aoi_bbox = (-93.8, 44.5, -82.5, 50.2)
+overall_start = datetime(2026, 5, 1, tzinfo=UTC)
+overall_end = datetime(2026, 9, 1, tzinfo=UTC)
+tile_ids = set()
 
-start = datetime(2026, 6, 1, tzinfo=UTC)
-end = datetime(2026, 7, 1, tzinfo=UTC) - timedelta(seconds=1)
+for collection in ("HLSL30_2.0", "HLSS30_2.0"):
+    for href in hls_geoparquet_hrefs(collection, overall_start, overall_end):
+        items = client.search(
+            href,
+            bbox=aoi_bbox,
+            datetime=f"{overall_start.isoformat()}/{(overall_end - timedelta(microseconds=1)).isoformat()}",
+        )
+        tile_ids.update(
+            tile_id
+            for item in items
+            if (tile_id := item_tile_id(item))
+        )
 
-full_bbox = (-105000, 2264000, 566000, 2937000)
+def iter_job_inputs():
+    month_start = overall_start
+    while month_start < overall_end:
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        for tile_id in sorted(tile_ids):
+            yield {
+                "tile_id": tile_id,
+                "start_datetime": month_start.strftime("%Y-%m-%dT00:00:00Z"),
+                "end_datetime": next_month.strftime("%Y-%m-%dT00:00:00Z"),
+                "direct_bucket_access": True,
+            }
+        month_start = next_month
 
-bboxes = []
-resolution = 30
-grid_len_pixels = 8192
-grid_len_meters = resolution * grid_len_pixels
-xmin_orig, ymin_orig = full_bbox[:2]
 
-xmin_start = xmin_orig - xmin_orig % grid_len_meters
-ymin_start = ymin_orig - ymin_orig % grid_len_meters
-
-xmin = xmin_start
-
-while xmin < full_bbox[2]:
-    xmax = xmin + grid_len_meters
-    ymin = ymin_start
-
-    while ymin < full_bbox[3]:
-        ymax = ymin + grid_len_meters
-        bboxes.append((xmin, ymin, xmax, ymax))
-        ymin = ymax
-
-    xmin = xmax
-
-jobs = (
-    {
-        "inputs": {
-            "start_datetime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end_datetime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "bbox": " ".join(str(coord) for coord in bbox),
-            "crs": "EPSG:5070",
-        },
-        "tag": "group-A" if not i % 2 else "group-B"
-    }
-    for i, bbox in enumerate(bboxes)
-)
-
-# run the first job
-response = maap.submit_job(
-    process_id=process_id,
-    queue="maap-dps-worker-32gb",
-    **next(jobs)
-)
-response.raise_for_status()
-
-# run the rest
-for job in jobs:
+job_ids = []
+for inputs in iter_job_inputs():
     response = maap.submit_job(
         process_id=process_id,
+        inputs=inputs,
         queue="maap-dps-worker-16gb",
-        **job
+        tag="native-hls-tiles",
     )
     response.raise_for_status()
+    job_id = response.json()["jobID"]
+    job_ids.append(job_id)
+    logger.info(
+        "Submitted %s for %s %s",
+        job_id,
+        inputs["tile_id"],
+        inputs["start_datetime"][:10],
+    )
 ```
 
-## Inputs
+Submission does not mean completion. Save `job_ids` to check the jobs later; rerunning the submission loop can create duplicate jobs. To check their current status without resubmitting:
 
-- `start_datetime`: HLS query start in ISO format.
-- `end_datetime`: HLS query end in ISO format.
-- `bbox`: `xmin ymin xmax ymax` in the supplied CRS.
-- `crs`: CRS for the bounding box. It must use meter units.
+```python
+for job_id in job_ids:
+    response = maap.get_job_status(job_id)
+    response.raise_for_status()
+    logger.info("Job %s: %s", job_id, response.json()["status"])
+```
+
+If the AOI is a polygon, use `intersects` where supported or polygon-filter the bbox candidates before submission. See `hls-cloud-free-temporal-mosaics.ipynb` for the notebook workflow; set its process version to the same deployed native-tile release.
+
+Multiple same-collection acquisitions on one day are grouped by `P1D`; lazycogs' default first-valid mosaic is selected in deterministic `datetime,id` order. Spectral and Fmask reads use the same discovered item IDs and grouping. Missing one collection is allowed; no observations across both collections fails clearly.
 
 ## Output contract
-
-The implementation creates one COG per requested band and writes a self-contained STAC catalog rooted at the output directory. A successful run contains:
 
 ```text
 output/
@@ -187,17 +180,4 @@ output/
 └── swir_2.tif
 ```
 
-The hierarchy is `Catalog -> Collection -> Item`. The collection has stable algorithm metadata, global/open extent, `item_assets` definitions for the output COG bands, links to this repository and the HLSL30 2.0 and HLSS30 2.0 source collections, and the STAC `other` license value because this output contract does not assert a redistribution license. The item ID is derived from the projected bounding box and date range, and the item links to the band assets.
-
-## Release and recovery
-
-A release requires all of the following:
-
-- `RELEASE_PLEASE_TOKEN` configured as a GitHub secret with permission for Release Please to create releases and release PRs.
-- `MAAP_TOKEN` configured as a repository or protected `production` environment secret for MAAP deployment.
-- The protected `production` environment enabled, with its required approval reviewers available.
-- The versioned GHCR package readable by MAAP workers. Make the package public or configure an equivalent pull path before submitting jobs.
-
-A release publishes the versioned GHCR image and registers the release CWL. The CWL and image tag must stay aligned; do not retag an image that MAAP already uses.
-
-If a release fails, first check whether image publication or MAAP registration failed. Fix the release metadata, token, environment approval, or GHCR visibility as appropriate, then rerun the failed release workflow. If the release PR contains the wrong version or image tag, correct it before merging and create a new release rather than overwriting an existing image. After recovery, validate the registered process and submit one small OGC smoke job before starting a larger batch.
+The hierarchy is `Catalog -> Collection -> Item`. The COGs retain the exact native source transform, CRS, shape, and footprint. The output STAC item records precise temporal bounds, resulting native projection metadata, tile identity, composite definition, and discovered source item IDs.

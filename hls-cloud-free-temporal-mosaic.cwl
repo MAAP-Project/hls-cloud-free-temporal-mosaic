@@ -31,13 +31,9 @@ $graph:
         label: End datetime
         doc: End of the HLS STAC query interval in ISO format.
         type: string
-      bbox:
-        label: Bounding box
-        doc: Space-separated bounding box coordinates in CRS coordinates.
-        type: string
-      crs:
-        label: CRS
-        doc: Coordinate reference system for the bounding box.
+      tile_id:
+        label: HLS tile ID
+        doc: Exact HLS MGRS tile ID, for example T15TYJ.
         type: string
       direct_bucket_access:
         label: Direct bucket access
@@ -54,8 +50,7 @@ $graph:
         in:
           start_datetime: start_datetime
           end_datetime: end_datetime
-          bbox: bbox
-          crs: crs
+          tile_id: tile_id
           direct_bucket_access: direct_bucket_access
         out:
           - output
@@ -90,16 +85,11 @@ $graph:
         inputBinding:
           position: 2
           prefix: '--end_datetime'
-      bbox:
+      tile_id:
         type: string
         inputBinding:
           position: 3
-          prefix: '--bbox'
-      crs:
-        type: string
-        inputBinding:
-          position: 4
-          prefix: '--crs'
+          prefix: '--tile_id'
       direct_bucket_access:
         type: boolean
         default: true
