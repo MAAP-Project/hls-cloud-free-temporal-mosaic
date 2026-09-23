@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.2...v0.3.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* use maap-py to get LPDAAC S3 creds ([#14](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/14)) ([7ea091d](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/7ea091d3bee20f61ae93293af6b35740831514fe))
+
 ## [0.3.2](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.3.1...v0.3.2) (2026-09-22)
 
 
