@@ -3,6 +3,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import dask
+import dask.array as dask_array
 import numpy as np
 import pytest
 import rasterio
@@ -383,6 +385,78 @@ def test_create_composite_masks_clouds_and_preserves_lower_median():
     )
 
 
+def test_export_computes_shared_work_once_with_configured_workers(
+    tmp_path, monkeypatch
+):
+    spectral = xr.DataArray(
+        np.array(
+            [
+                [[[1, 2], [NODATA, 4]], [[10, 20], [30, 40]]],
+                [[[3, NODATA], [5, 6]], [[30, 40], [50, 60]]],
+            ],
+            dtype=np.int16,
+        ),
+        dims=("time", "band", "y", "x"),
+        coords={
+            "time": ["2024-01-01", "2024-01-02"],
+            "band": ["red", "green"],
+            "x": [500015, 500045],
+            "y": [5100045, 5100015],
+        },
+    ).chunk({"time": 1})
+    fmask_calls = []
+
+    def load_fmask():
+        fmask_calls.append(True)
+        return np.array(
+            [
+                [[0, 8], [0, 0]],
+                [[4, 0], [0, 0]],
+            ],
+            dtype=np.uint8,
+        )
+
+    fmask = xr.DataArray(
+        dask_array.from_delayed(
+            dask.delayed(load_fmask)(), shape=(2, 2, 2), dtype=np.uint8
+        ),
+        dims=("time", "y", "x"),
+        coords={"time": spectral.time, "x": spectral.x, "y": spectral.y},
+    )
+    composite = create_composite(spectral, fmask)
+    compute_calls = []
+    real_compute = main.dask.compute
+
+    def compute(*args, **kwargs):
+        compute_calls.append(kwargs)
+        return real_compute(*args, **kwargs)
+
+    monkeypatch.setattr(main.dask, "compute", compute)
+    grid = _metadata_grid()
+    export_outputs(
+        composite,
+        bands=["red", "green"],
+        tile_id="T15TYJ",
+        grid=grid,
+        start_datetime=datetime(2024, 1, 1, tzinfo=UTC),
+        end_datetime=datetime(2024, 1, 31, 23, 59, 59, tzinfo=UTC),
+        output_dir=tmp_path,
+        source_item_ids=[],
+        dask_workers=1,
+    )
+
+    assert compute_calls == [{"scheduler": "threads", "num_workers": 1}]
+    assert len(fmask_calls) == 1
+    with (
+        rasterio.open(tmp_path / "red.tif") as red,
+        rasterio.open(tmp_path / "green.tif") as green,
+    ):
+        np.testing.assert_array_equal(red.read(1), [[1, NODATA], [5, 4]])
+        np.testing.assert_array_equal(green.read(1), [[10, 40], [30, 40]])
+        assert red.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+        assert green.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+
+
 def test_dask_worker_count_respects_cpu_and_memory_limits(monkeypatch):
     spectral, _, _ = synthetic_stacks()
     spectral = spectral.chunk({"time": -1, "x": 2, "y": 2})
@@ -416,7 +490,10 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         assert dataset.crs == CRS.from_epsg(32615)
         assert dataset.transform == transform
         assert dataset.shape == (2, 2)
+        assert dataset.dtypes == ("int16",)
+        assert dataset.nodata == NODATA
         np.testing.assert_array_equal(dataset.read(1), [[1, NODATA], [5, 4]])
+        assert dataset.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
 
     catalog = json.loads((tmp_path / "catalog.json").read_text())
     collection_path = tmp_path / next(
