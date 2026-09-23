@@ -500,6 +500,7 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         link["href"] for link in catalog["links"] if link["rel"] == "child"
     )
     collection = json.loads(collection_path.read_text())
+    assert collection["title"] == "HLS Cloud-Free Temporal Mosaic v0.4.1"
     item_path = collection_path.parent / next(
         link["href"] for link in collection["links"] if link["rel"] == "item"
     )
@@ -523,6 +524,20 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
     assert item["properties"]["end_datetime"] == "2024-01-31T23:59:59Z"
     assert item["properties"]["proj:shape"] == [2, 2]
     assert item["properties"]["proj:transform"] == list(transform)
+
+
+def test_release_please_tracks_algorithm_version_in_runtime_and_docs():
+    config = json.loads((ROOT / "release-please-config.json").read_text())
+    generic_paths = [
+        entry["path"]
+        for entry in config["packages"]["."]["extra-files"]
+        if entry.get("type") == "generic"
+    ]
+    assert "main.py" in generic_paths
+    for path in ("main.py", "README.md"):
+        source = (ROOT / path).read_text()
+        assert "x-release-please-start-version" in source
+        assert "x-release-please-end-version" in source
 
 
 def test_application_package_uses_tile_input_and_direct_access_default():

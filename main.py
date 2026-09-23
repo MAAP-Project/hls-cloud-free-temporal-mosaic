@@ -58,6 +58,9 @@ INT16_SENTINEL = -32768
 FMASK_NODATA = 255
 HLS_BITMASK = 14
 COMPOSITE_METHOD = "lower-median-v1"
+# x-release-please-start-version
+ALGORITHM_VERSION = "0.4.1"
+# x-release-please-end-version
 MGRS_EXTENSION_URL = "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json"
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
 LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
@@ -661,7 +664,7 @@ def export_outputs(
     )
     collection = Collection(
         id="hls-cloud-free-temporal-mosaic",
-        title="HLS Cloud-Free Temporal Mosaic",
+        title=f"HLS Cloud-Free Temporal Mosaic v{ALGORITHM_VERSION}",
         description=(
             "Cloud-free temporal mosaics of HLS surface reflectance. "
             "The algorithm masks cloud and cloud-shadow pixels using HLS Fmask "
