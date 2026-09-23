@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 import dask
 import lazycogs
+import numpy as np
 import rioxarray  # noqa: F401
 import xarray as xr
 from affine import Affine
@@ -32,6 +33,7 @@ from pystac import (
     SpatialExtent,
     TemporalExtent,
 )
+from pystac.extensions.raster import DataType, RasterBand, RasterExtension
 from rio_stac import create_stac_item
 from rustac import DuckdbClient
 
@@ -51,6 +53,7 @@ DEFAULT_RESOLUTION = 30
 DTYPE = "int16"
 FMASK_DTYPE = "uint8"
 NODATA = -9999
+INT16_SENTINEL = -32768
 FMASK_NODATA = 255
 HLS_BITMASK = 14
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
@@ -351,10 +354,29 @@ def open_hls_stacks(
 def create_composite(
     spectral_stack: xr.DataArray, fmask_stack: xr.DataArray
 ) -> xr.DataArray:
-    """Apply the HLS Fmask QA mask and lazily calculate the temporal median composite."""
-    valid_mask = (fmask_stack & HLS_BITMASK) == 0
-    cloud_free = spectral_stack.where(valid_mask).where(spectral_stack != NODATA)
-    return cloud_free.median(dim="time", skipna=True).fillna(NODATA)
+    """Apply the HLS mask and lazily calculate an integer lower-median composite."""
+    valid_mask = ((fmask_stack & HLS_BITMASK) == 0) & (spectral_stack != NODATA)
+    valid_count = valid_mask.sum(dim="time")
+    masked = xr.where(valid_mask, spectral_stack, INT16_SENTINEL)
+
+    def lower_median(values: Any, count: Any) -> Any:
+        sorted_values = np.sort(values, axis=-1)
+        index = values.shape[-1] - count + (count - 1) // 2
+        return np.take_along_axis(sorted_values, index[..., None], axis=-1)[..., 0]
+
+    composite = xr.apply_ufunc(
+        lower_median,
+        masked,
+        valid_count,
+        input_core_dims=[["time"], []],
+        output_core_dims=[[]],
+        dask="parallelized",
+        output_dtypes=[spectral_stack.dtype],
+    )
+    composite = composite.where(valid_count > 0, NODATA)
+    return composite.transpose(
+        *[dimension for dimension in spectral_stack.dims if dimension != "time"]
+    )
 
 
 def export_outputs(
@@ -392,7 +414,7 @@ def export_outputs(
         )
         assets[band] = Asset(
             href=href,
-            description=f"median {band} band value from cloud-free pixels in the temporal mosaic",
+            description=f"lower-median {band} band value from cloud-free pixels in the temporal mosaic",
             media_type=MediaType.COG,
             roles=["data"],
         )
@@ -410,7 +432,8 @@ def export_outputs(
         description=(
             "Cloud-free temporal mosaics of HLS surface reflectance. "
             "The algorithm masks cloud and cloud-shadow pixels using HLS Fmask "
-            "quality flags, then computes a per-pixel median reflectance composite."
+            "quality flags, then computes a per-pixel integer lower-median "
+            "reflectance composite."
         ),
         extent=Extent(
             spatial=SpatialExtent([[-180.0, -90.0, 180.0, 90.0]]),
@@ -477,7 +500,12 @@ def export_outputs(
         },
     )
 
-    item.assets = assets
+    item.assets = {}
+    for band, asset in assets.items():
+        item.add_asset(band, asset)
+        RasterExtension.ext(asset, add_if_missing=True).bands = [
+            RasterBand.create(data_type=DataType(DTYPE))
+        ]
     item.set_self_href(f"{output_dir}/item.json")
     collection.add_item(item)
     item.make_asset_hrefs_relative()
