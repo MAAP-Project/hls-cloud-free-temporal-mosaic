@@ -63,7 +63,7 @@ URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
 LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
 EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
 HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/year={year}/month={month}/{collection}-{year}-{month}.parquet"
-CHUNKS = {"time": -1, "band": 1, "x": -1, "y": -1}
+CHUNKS = {"time": -1, "band": 1, "x": 1024, "y": 1024}
 HLS_TILE_RE = re.compile(r"^T\d{2}[A-Z]{3}$")
 HLS_ITEM_RE = re.compile(r"^HLS\.[LS]30\.(T\d{2}[A-Z]{3})\.")
 

@@ -68,14 +68,37 @@ For an AOI, query the archive in both HLS collections across the overall interva
 
 The archive is partitioned by year and month. The runtime enumerates exact monthly parquet HREFs from the requested interval instead of using a recursive wildcard. It supports STAC `bbox`, datetime, and CQL2 queries. A polygon AOI should use exact intersection when the query service supports it; otherwise use its geographic bbox as a candidate query and over-select tiles, then filter candidates with the polygon locally. Do not build a projected 8192-pixel grid or submit arbitrary bboxes.
 
+Run this example from the repository root in an authenticated MAAP ADE session with the project dependencies installed. Set `HLS_PROCESS_VERSION` in your environment to a deployed release that accepts `tile_id`. Version `0.3.3` uses the old bbox/CRS interface; wait for the native-tile release before submitting these jobs.
+
+**Note:** This example submits a real job for each discovered tile/month on `maap-dps-worker-16gb`. Check the AOI, dates, and queue before running it. Keep the interval aligned to calendar-month boundaries.
+
 ```python
+import logging
+import os
 from datetime import UTC, datetime, timedelta
 
-from rustac import DuckdbClient
+from maap.maap import MAAP
 
-from main import hls_geoparquet_hrefs, hls_item_tile_id
+from main import build_duckdb_client, hls_geoparquet_hrefs, item_tile_id
 
-client = DuckdbClient()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+maap = MAAP()
+process_version = os.environ["HLS_PROCESS_VERSION"]
+response = maap.list_algorithms()
+response.raise_for_status()
+process_ids = [
+    process["processID"]
+    for process in response.json()["processes"]
+    if process["title"] == "HLS Cloud-Free Temporal Mosaic"
+    and process["version"] == process_version
+]
+if len(process_ids) != 1:
+    raise ValueError(f"Expected one deployed process for version {process_version}, got {process_ids}")
+process_id = process_ids[0]
+
+client = build_duckdb_client()
 aoi_bbox = (-92.2, 40.0, -91.0, 41.0)
 overall_start = datetime(2024, 12, 1, tzinfo=UTC)
 overall_end = datetime(2025, 3, 1, tzinfo=UTC)
@@ -86,27 +109,47 @@ for collection in ("HLSL30_2.0", "HLSS30_2.0"):
         items = client.search(
             href,
             bbox=aoi_bbox,
-            datetime=f"{overall_start.isoformat()}/{overall_end.isoformat()}",
+            datetime=f"{overall_start.isoformat()}/{(overall_end - timedelta(microseconds=1)).isoformat()}",
         )
         tile_ids.update(
             tile_id
             for item in items
-            if (tile_id := hls_item_tile_id(item.get("id", "")))
+            if (tile_id := item_tile_id(item))
         )
 
+job_ids = []
 month_start = overall_start
 while month_start < overall_end:
     next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
     for tile_id in sorted(tile_ids):
-        submit_job(
-            tile_id=tile_id,
-            start_datetime=month_start.strftime("%Y-%m-%dT00:00:00Z"),
-            end_datetime=next_month.strftime("%Y-%m-%dT00:00:00Z"),
+        response = maap.submit_job(
+            process_id=process_id,
+            inputs={
+                "tile_id": tile_id,
+                "start_datetime": month_start.strftime("%Y-%m-%dT00:00:00Z"),
+                "end_datetime": next_month.strftime("%Y-%m-%dT00:00:00Z"),
+                "direct_bucket_access": True,
+            },
+            queue="maap-dps-worker-16gb",
+            tag="native-hls-tiles",
         )
+        response.raise_for_status()
+        job_id = response.json()["jobID"]
+        job_ids.append(job_id)
+        logger.info("Submitted %s for %s %s", job_id, tile_id, month_start.date())
     month_start = next_month
 ```
 
-If the AOI is a polygon, use `intersects` where supported or polygon-filter the bbox candidates before submission. See `hls-cloud-free-temporal-mosaics.ipynb` for the same workflow with MAAP job submission.
+Submission does not mean completion. Save `job_ids` to check the jobs later; rerunning the submission loop can create duplicate jobs. To check their current status without resubmitting:
+
+```python
+for job_id in job_ids:
+    response = maap.get_job_status(job_id)
+    response.raise_for_status()
+    logger.info("Job %s: %s", job_id, response.json()["status"])
+```
+
+If the AOI is a polygon, use `intersects` where supported or polygon-filter the bbox candidates before submission. See `hls-cloud-free-temporal-mosaics.ipynb` for the notebook workflow; set its process version to the same deployed native-tile release.
 
 Multiple same-collection acquisitions on one day are grouped by `P1D`; lazycogs' default first-valid mosaic is selected in deterministic `datetime,id` order. Spectral and Fmask reads use the same discovered item IDs and grouping. Missing one collection is allowed; no observations across both collections fails clearly.
 
