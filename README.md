@@ -19,7 +19,7 @@ hls-cloud-free-temporal-mosaic.cwl
 Release automation registers that OGC Application Package and points it at the matching standalone, versioned image:
 
 ```text
-ghcr.io/maap-project/hls-cloud-free-temporal-mosaic:v0.2.0
+ghcr.io/maap-project/hls-cloud-free-temporal-mosaic:v0.3.3
 ```
 
 MAAP does not build the image or install this repository from a legacy descriptor. The CWL invokes `main.py` in the image directly.
@@ -86,22 +86,79 @@ from datetime import UTC, datetime, timedelta
 from maap.maap import MAAP
 
 maap = MAAP()
-start = datetime(2025, 5, 1, tzinfo=UTC)
-end = datetime(2025, 6, 1, tzinfo=UTC) - timedelta(seconds=1)
 
+# locate the process ID
+response = maap.list_algorithms()
+response.raise_for_status()
+
+process_id = next(
+   (
+       process["processID"]
+       for process in response.json()["processes"]
+       if process["title"] == "HLS Cloud-Free Temporal Mosaic"
+       and process["version"] == "0.3.3"
+   ),
+   None,
+)
+if process_id is None:
+   raise ValueError("algorithm not found")
+
+start = datetime(2026, 6, 1, tzinfo=UTC)
+end = datetime(2026, 7, 1, tzinfo=UTC) - timedelta(seconds=1)
+
+full_bbox = (-105000, 2264000, 566000, 2937000)
+
+bboxes = []
+resolution = 30
+grid_len_pixels = 8192
+grid_len_meters = resolution * grid_len_pixels
+xmin_orig, ymin_orig = full_bbox[:2]
+
+xmin_start = xmin_orig - xmin_orig % grid_len_meters
+ymin_start = ymin_orig - ymin_orig % grid_len_meters
+
+xmin = xmin_start
+
+while xmin < full_bbox[2]:
+    xmax = xmin + grid_len_meters
+    ymin = ymin_start
+
+    while ymin < full_bbox[3]:
+        ymax = ymin + grid_len_meters
+        bboxes.append((xmin, ymin, xmax, ymax))
+        ymin = ymax
+
+    xmin = xmax
+
+jobs = (
+    {
+        "inputs": {
+            "start_datetime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_datetime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "bbox": " ".join(str(coord) for coord in bbox),
+            "crs": "EPSG:5070",
+        },
+        "tag": "group-A" if not i % 2 else "group-B"
+    }
+    for i, bbox in enumerate(bboxes)
+)
+
+# run the first job
 response = maap.submit_job(
-    process_id="hls_cloud_free_temporal_mosaic",
-    inputs={
-        "start_datetime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "end_datetime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "bbox": "500000 5000000 600000 5100000",
-        "crs": "EPSG:32615",
-    },
-    queue="maap-dps-worker-16gb",
-    tag="demo",
+    process_id=process_id,
+    queue="maap-dps-worker-32gb",
+    **next(jobs)
 )
 response.raise_for_status()
-print(response.headers["Location"])
+
+# run the rest
+for job in jobs:
+    response = maap.submit_job(
+        process_id=process_id,
+        queue="maap-dps-worker-16gb",
+        **job
+    )
+    response.raise_for_status()
 ```
 
 ## Inputs
