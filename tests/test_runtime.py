@@ -13,7 +13,15 @@ from pyproj import CRS
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from main import NODATA, create_composite, export_outputs, parse_args  # noqa: E402
+import main  # noqa: E402
+from main import (  # noqa: E402
+    NODATA,
+    MaapEarthdataCredentialProvider,
+    build_s3_store,
+    create_composite,
+    export_outputs,
+    parse_args,
+)
 
 
 def test_parse_args_accepts_named_inputs_without_running_work():
@@ -54,6 +62,66 @@ def test_parse_args_rejects_invalid_bbox(bbox):
                 "/tmp/output",
             ]
         )
+
+
+def test_maap_credential_provider_refreshes_and_maps_obstore_schema():
+    expiration = "2026-01-02T03:04:05+00:00"
+
+    class FakeAws:
+        def __init__(self):
+            self.calls = []
+            self.responses = [
+                {
+                    "accessKeyId": "access-1",
+                    "secretAccessKey": "secret-1",
+                    "sessionToken": "token-1",
+                    "expiration": expiration,
+                },
+                {
+                    "accessKeyId": "access-2",
+                    "secretAccessKey": "secret-2",
+                    "sessionToken": "token-2",
+                    "expiration": "2026-01-02T04:04:05Z",
+                },
+            ]
+
+        def earthdata_s3_credentials(self, endpoint_uri):
+            self.calls.append(endpoint_uri)
+            return self.responses.pop(0)
+
+    class FakeMaap:
+        def __init__(self):
+            self.aws = FakeAws()
+
+    client = FakeMaap()
+    provider = MaapEarthdataCredentialProvider(client)
+
+    assert provider() == {
+        "access_key_id": "access-1",
+        "secret_access_key": "secret-1",
+        "token": "token-1",
+        "expires_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    }
+    assert provider()["access_key_id"] == "access-2"
+    assert client.aws.calls == [
+        "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials",
+        "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials",
+    ]
+
+
+def test_build_s3_store_uses_maap_provider_in_lp_region(monkeypatch):
+    class StubProvider:
+        def __call__(self):
+            return {}
+
+    provider = StubProvider()
+    monkeypatch.setattr(main, "MaapEarthdataCredentialProvider", lambda: provider)
+
+    store = build_s3_store()
+
+    assert store.config["bucket"] == "lp-prod-protected"
+    assert store.config["region"] == "us-west-2"
+    assert store.credential_provider is provider
 
 
 def test_application_package_invokes_main_with_direct_access_default():
