@@ -12,6 +12,10 @@
           "path": "hls-cloud-free-temporal-mosaic.cwl"
         },
         {
+          "type": "generic",
+          "path": "README.md"
+        },
+        {
           "type": "toml",
           "path": "uv.lock",
           "jsonpath": "$.package[?(@.name.value == 'hls-cloud-free-temporal-mosaic')].version"

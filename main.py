@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import dask
 import lazycogs
 import rioxarray  # noqa: F401
 import xarray as xr
@@ -56,7 +57,7 @@ URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
 LP_DAAC_CREDENTIALS_URL = "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
 EARTHDATA_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
 HLS_STAC_GEOPARQUET_HREF = "s3://nasa-maap-data-store/file-staging/nasa-map/hls-stac-geoparquet-archive/v2/{collection}/**/*.parquet"
-CHUNKS = {"time": -1, "x": 2048, "y": 2048}
+CHUNKS = {"time": -1, "band": 1, "x": 2048, "y": 2048}
 
 COLLECTION_BAND_ALIASES = {
     "HLSL30_2.0": {
@@ -350,10 +351,10 @@ def open_hls_stacks(
 def create_composite(
     spectral_stack: xr.DataArray, fmask_stack: xr.DataArray
 ) -> xr.DataArray:
-    """Apply the HLS Fmask QA mask and compute the temporal median composite."""
+    """Apply the HLS Fmask QA mask and lazily calculate the temporal median composite."""
     valid_mask = (fmask_stack & HLS_BITMASK) == 0
     cloud_free = spectral_stack.where(valid_mask).where(spectral_stack != NODATA)
-    return cloud_free.median(dim="time", skipna=True).fillna(NODATA).compute()
+    return cloud_free.median(dim="time", skipna=True).fillna(NODATA)
 
 
 def export_outputs(
@@ -370,6 +371,7 @@ def export_outputs(
     assets: dict[str, Asset] = {}
     transform = Affine(*composite.attrs["spatial:transform"])
 
+    writes = []
     for band in bands:
         href = f"{band}.tif"
         logger.info("exporting %s", href)
@@ -379,21 +381,23 @@ def export_outputs(
             .rio.write_transform(transform, inplace=False)
             .rio.write_nodata(NODATA, encoded=True, inplace=False)
         )
-
-        output_file_path = output_dir / href
-        da_to_export.rio.to_raster(
-            output_file_path,
-            driver="COG",
-            dtype=DTYPE,
-            compress="DEFLATE",
+        writes.append(
+            da_to_export.rio.to_raster(
+                output_dir / href,
+                driver="COG",
+                dtype=DTYPE,
+                compress="DEFLATE",
+                compute=False,
+            )
         )
-
         assets[band] = Asset(
             href=href,
             description=f"median {band} band value from cloud-free pixels in the temporal mosaic",
             media_type=MediaType.COG,
             roles=["data"],
         )
+
+    dask.compute(*writes, scheduler="threads", num_workers=1)
 
     catalog = Catalog(
         id="DPS",
