@@ -20,6 +20,14 @@
           "path": "README.md"
         },
         {
+          "type": "generic",
+          "path": "tests/test_runtime.py"
+        },
+        {
+          "type": "generic",
+          "path": "hls-cloud-free-temporal-mosaics.ipynb"
+        },
+        {
           "type": "toml",
           "path": "uv.lock",
           "jsonpath": "$.package[?(@.name.value == 'hls-cloud-free-temporal-mosaic')].version"

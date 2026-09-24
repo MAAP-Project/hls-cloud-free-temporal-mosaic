@@ -500,7 +500,9 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         link["href"] for link in catalog["links"] if link["rel"] == "child"
     )
     collection = json.loads(collection_path.read_text())
+    # x-release-please-start-version
     assert collection["title"] == "HLS Cloud-Free Temporal Mosaic v0.4.1"
+    # x-release-please-end-version
     item_path = collection_path.parent / next(
         link["href"] for link in collection["links"] if link["rel"] == "item"
     )
