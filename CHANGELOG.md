@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.4.1...v0.4.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* refactor compute to do less work ([#22](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/22)) ([358c0e9](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/358c0e96a14f904f20ac842ca635928d9cbc4910))
+
 ## [0.4.1](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.4.0...v0.4.1) (2026-09-23)
 
 
