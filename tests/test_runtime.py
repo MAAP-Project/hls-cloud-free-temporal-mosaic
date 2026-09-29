@@ -18,16 +18,16 @@ sys.path.insert(0, str(ROOT))
 import main  # noqa: E402
 from main import (  # noqa: E402
     NODATA,
-    NativeGrid,
     MaapEarthdataCredentialProvider,
+    NativeGrid,
     build_s3_store,
     create_composite,
     dask_worker_count,
     discover_hls_items,
-    hls_geoparquet_hrefs,
-    item_tile_id,
     export_outputs,
+    hls_geoparquet_hrefs,
     item_id,
+    item_tile_id,
     native_grid_for_items,
     normalize_interval,
     open_hls_collection,
@@ -503,6 +503,49 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
     # x-release-please-start-version
     assert collection["title"] == "HLS Cloud-Free Temporal Mosaic v0.4.2"
     # x-release-please-end-version
+    assert collection["stac_extensions"] == [
+        "https://stac-extensions.github.io/render/v2.0.0/schema.json"
+    ]
+    assert collection["renders"] == {
+        "true-color": {
+            "assets": ["red", "green", "blue"],
+            "title": "True Color",
+            "color_formula": "Gamma RGB 3.5 Saturation 1.2 Sigmoidal RGB 15 0.35",
+        },
+        "false-color": {
+            "assets": ["nir_narrow", "green", "blue"],
+            "title": "False Color (NIR)",
+            "color_formula": "Gamma RGB 2.5 Saturation 1.2 Sigmoidal RGB 10 0.35",
+        },
+        "ndvi": {
+            "assets": ["nir_narrow", "red"],
+            "title": "NDVI",
+            "rescale": [[-1, 1]],
+            "colormap_name": "RdYlGn",
+            "expression": "(b1 - b2) / (b1 + b2)",
+        },
+        "nbr": {
+            "assets": ["nir_narrow", "swir_2"],
+            "title": "NBR",
+            "rescale": [[-1, 1]],
+            "colormap_name": "RdYlGn",
+            "expression": "(b1 - b2) / (b1 + b2)",
+        },
+        "ndbi": {
+            "assets": ["swir_1", "nir_narrow"],
+            "title": "NDBI",
+            "rescale": [[-1, 1]],
+            "colormap_name": "RdYlGn_r",
+            "expression": "(b1 - b2) / (b1 + b2)",
+        },
+        "ndwi": {
+            "assets": ["green", "nir_narrow"],
+            "title": "NDWI",
+            "rescale": [[-1, 1]],
+            "colormap_name": "Blues",
+            "expression": "(b1 - b2) / (b1 + b2)",
+        },
+    }
     item_path = collection_path.parent / next(
         link["href"] for link in collection["links"] if link["rel"] == "item"
     )
