@@ -18,16 +18,16 @@ sys.path.insert(0, str(ROOT))
 import main  # noqa: E402
 from main import (  # noqa: E402
     NODATA,
-    NativeGrid,
     MaapEarthdataCredentialProvider,
+    NativeGrid,
     build_s3_store,
     create_composite,
     dask_worker_count,
     discover_hls_items,
-    hls_geoparquet_hrefs,
-    item_tile_id,
     export_outputs,
+    hls_geoparquet_hrefs,
     item_id,
+    item_tile_id,
     native_grid_for_items,
     normalize_interval,
     open_hls_collection,
@@ -507,10 +507,15 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         "https://stac-extensions.github.io/render/v2.0.0/schema.json"
     ]
     assert collection["renders"] == {
-        "rgb": {
+        "true-color": {
             "assets": ["red", "green", "blue"],
-            "title": "RGB",
+            "title": "True Color",
             "color_formula": "Gamma RGB 3.5 Saturation 1.2 Sigmoidal RGB 15 0.35",
+        },
+        "false-color": {
+            "assets": ["nir_narrow", "green", "blue"],
+            "title": "False Color (NIR)",
+            "color_formula": "Gamma RGB 2.5 Saturation 1.2 Sigmoidal RGB 10 0.35",
         },
         "ndvi": {
             "assets": ["nir_narrow", "red"],

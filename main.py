@@ -695,10 +695,15 @@ def export_outputs(
         for band in bands
     }
     RenderExtension.ext(collection, add_if_missing=True).renders = {
-        "rgb": Render.create(
+        "true-color": Render.create(
             assets=["red", "green", "blue"],
-            title="RGB",
+            title="True Color",
             color_formula="Gamma RGB 3.5 Saturation 1.2 Sigmoidal RGB 15 0.35",
+        ),
+        "false-color": Render.create(
+            assets=["nir_narrow", "green", "blue"],
+            title="False Color (NIR)",
+            color_formula="Gamma RGB 2.5 Saturation 1.2 Sigmoidal RGB 10 0.35",
         ),
         "ndvi": Render.create(
             assets=["nir_narrow", "red"],
