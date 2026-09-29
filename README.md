@@ -186,4 +186,4 @@ The hierarchy is `Catalog -> Collection -> Item`. The collection title includes 
 <!-- x-release-please-start-version -->
 `HLS Cloud-Free Temporal Mosaic v0.4.2`
 <!-- x-release-please-end-version -->
-The COGs retain the exact native source transform, CRS, shape, and footprint. The output STAC item records precise temporal bounds, resulting native projection metadata, tile identity, composite definition, and discovered source item IDs.
+The COGs retain the exact native source transform, CRS, shape, and footprint. The output STAC item records precise temporal bounds, resulting native projection metadata, tile identity, composite definition, and discovered source item IDs. The collection's STAC Render extension defines `rgb`, `ndvi`, `nbr`, `ndbi`, and McFeeters `ndwi` views; RGB uses the supplied TiTiler color formula and the indices use ordered `b1`/`b2` expressions.
