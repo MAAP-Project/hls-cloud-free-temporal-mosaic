@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.4.2...v0.4.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* add STAC render configurations ([#24](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/issues/24)) ([e3c07c2](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/commit/e3c07c250a55450d22d565090984435f9dd8353f))
+
 ## [0.4.2](https://github.com/MAAP-Project/hls-cloud-free-temporal-mosaic/compare/v0.4.1...v0.4.2) (2026-09-24)
 
 
