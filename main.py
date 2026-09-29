@@ -60,7 +60,7 @@ FMASK_NODATA = 255
 HLS_BITMASK = 14
 COMPOSITE_METHOD = "lower-median-v1"
 # x-release-please-start-version
-ALGORITHM_VERSION = "0.4.2"
+ALGORITHM_VERSION = "0.4.3"
 # x-release-please-end-version
 MGRS_EXTENSION_URL = "https://stac-extensions.github.io/mgrs/v1.0.0/schema.json"
 URL_PREFIX = "https://data.lpdaac.earthdatacloud.nasa.gov"
