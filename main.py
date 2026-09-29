@@ -703,21 +703,29 @@ def export_outputs(
         "ndvi": Render.create(
             assets=["nir_narrow", "red"],
             title="NDVI",
+            rescale=[[-1, 1]],
+            colormap_name="RdYlGn",
             expression="(b1 - b2) / (b1 + b2)",
         ),
         "nbr": Render.create(
             assets=["nir_narrow", "swir_2"],
             title="NBR",
+            rescale=[[-1, 1]],
+            colormap_name="RdYlGn",
             expression="(b1 - b2) / (b1 + b2)",
         ),
         "ndbi": Render.create(
             assets=["swir_1", "nir_narrow"],
             title="NDBI",
+            rescale=[[-1, 1]],
+            colormap_name="RdYlGn_r",
             expression="(b1 - b2) / (b1 + b2)",
         ),
         "ndwi": Render.create(
             assets=["green", "nir_narrow"],
             title="NDWI",
+            rescale=[[-1, 1]],
+            colormap_name="Blues",
             expression="(b1 - b2) / (b1 + b2)",
         ),
     }

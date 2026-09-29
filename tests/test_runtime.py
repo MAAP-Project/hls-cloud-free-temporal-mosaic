@@ -515,21 +515,29 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
         "ndvi": {
             "assets": ["nir_narrow", "red"],
             "title": "NDVI",
+            "rescale": [[-1, 1]],
+            "colormap_name": "RdYlGn",
             "expression": "(b1 - b2) / (b1 + b2)",
         },
         "nbr": {
             "assets": ["nir_narrow", "swir_2"],
             "title": "NBR",
+            "rescale": [[-1, 1]],
+            "colormap_name": "RdYlGn",
             "expression": "(b1 - b2) / (b1 + b2)",
         },
         "ndbi": {
             "assets": ["swir_1", "nir_narrow"],
             "title": "NDBI",
+            "rescale": [[-1, 1]],
+            "colormap_name": "RdYlGn_r",
             "expression": "(b1 - b2) / (b1 + b2)",
         },
         "ndwi": {
             "assets": ["green", "nir_narrow"],
             "title": "NDWI",
+            "rescale": [[-1, 1]],
+            "colormap_name": "Blues",
             "expression": "(b1 - b2) / (b1 + b2)",
         },
     }
