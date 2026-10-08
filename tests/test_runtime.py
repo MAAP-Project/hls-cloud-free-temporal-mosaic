@@ -501,7 +501,7 @@ def test_export_writes_native_grid_and_stac_identity(tmp_path):
     )
     collection = json.loads(collection_path.read_text())
     # x-release-please-start-version
-    assert collection["title"] == "HLS Cloud-Free Temporal Mosaic v0.4.2"
+    assert collection["title"] == "HLS Cloud-Free Temporal Mosaic v0.4.3"
     # x-release-please-end-version
     assert collection["stac_extensions"] == [
         "https://stac-extensions.github.io/render/v2.0.0/schema.json"
